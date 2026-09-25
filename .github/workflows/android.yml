@@ -1,17 +1,17 @@
 name: Build Android APK
 
 on:
-push:
-branches: [ main ]
+ push:
+  branches: [ main ]
 
 permissions:
-contents: write
+ contents: write
 
 jobs:
-build:
-runs-on: ubuntu-latest
+ build:
+  runs-on: ubuntu-latest
 
-steps:
+  steps:
   - name: Скачивание кода
     uses: actions/checkout@v4
 
