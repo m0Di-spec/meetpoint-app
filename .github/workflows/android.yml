@@ -1,0 +1,49 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Скачивание кода
+        uses: actions/checkout@v4
+
+      - name: Настройка Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Установка веб-библиотек
+        run: npm install
+
+      - name: Сборка веб-версии
+        run: npm run build
+
+      - name: Синхронизация с Android
+        run: npx cap sync android
+
+      - name: Настройка Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Сборка APK файла (Самый сложный этап, делает сервер!)
+        working-directory: ./android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Сохранение готового APK-файла
+        uses: actions/upload-artifact@v4
+        with:
+          name: meetpoint-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
