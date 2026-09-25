@@ -1,17 +1,29 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Hash, Navigation, Loader2, MessageSquare, Send, Trash2, CalendarOff } from 'lucide-react';
 
-// Firebase imports
+// ИМПОРТЫ FIREBASE
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, updateProfile } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, updateProfile } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc } from 'firebase/firestore';
 
-// 1. Инициализация Firebase (вне компонента)
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+// ==========================================
+// 🚨 ШАГ 5: ВСТАВЬТЕ СВОИ КЛЮЧИ FIREBASE СЮДА
+// ==========================================
+// Замените пустые кавычки на данные из шага 4 в консоли Firebase
+const firebaseConfig = {
+   apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
+  authDomain: "meet-point-73afa.firebaseapp.com",
+  projectId: "meet-point-73afa",
+  storageBucket: "meet-point-73afa.firebasestorage.app",
+  messagingSenderId: "975617549003",
+  appId: "1:975617549003:web:e0e2f7233c6fca0e26314e"
+};
+// ==========================================
+
+// Инициализация базы данных
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 const CATEGORIES = [
   'Все',
@@ -57,17 +69,13 @@ export default function App() {
     image: ''
   });
 
-  // 2. Авторизация пользователя (анонимная или по токену)
+  // Авторизация пользователя (анонимная)
   useEffect(() => {
     const initAuth = async () => {
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
+        await signInAnonymously(auth);
       } catch (error) {
-        console.error("Auth error:", error);
+        console.error("Ошибка авторизации:", error);
       }
     };
     initAuth();
@@ -75,7 +83,6 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
-        // Проверяем, задано ли имя профиля. Если нет - показываем окно настройки.
         if (currentUser.displayName) {
           setUserName(currentUser.displayName);
         } else {
@@ -110,8 +117,8 @@ export default function App() {
       return;
     }
     
-    // Создаем отдельную коллекцию сообщений для каждого мероприятия для безопасности и скорости
-    const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', `meetpoint_messages_${selectedEvent.docId}`);
+    // Путь к сообщениям конкретного мероприятия
+    const messagesRef = collection(db, 'events', selectedEvent.docId, 'messages');
     
     const unsubscribe = onSnapshot(messagesRef, (snapshot) => {
       const msgs = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
@@ -128,7 +135,7 @@ export default function App() {
     if (!newMessage.trim() || !user || !selectedEvent) return;
     
     try {
-      const messagesRef = collection(db, 'artifacts', appId, 'public', 'data', `meetpoint_messages_${selectedEvent.docId}`);
+      const messagesRef = collection(db, 'events', selectedEvent.docId, 'messages');
       await addDoc(messagesRef, {
         text: newMessage.trim(),
         userId: user.uid,
@@ -141,18 +148,18 @@ export default function App() {
     }
   };
 
-  // 3. Подписка на данные из облачной базы данных в реальном времени
+  // Подписка на данные из облачной базы данных в реальном времени
   useEffect(() => {
     if (!user) return;
 
-    // Путь к публичным данным приложения
-    const eventsRef = collection(db, 'artifacts', appId, 'public', 'data', 'meetpoint_events');
+    // Путь к коллекции мероприятий
+    const eventsRef = collection(db, 'events');
     
     setIsLoading(true);
     const unsubscribe = onSnapshot(eventsRef, (snapshot) => {
       const eventsData = snapshot.docs.map(doc => ({
         ...doc.data(),
-        docId: doc.id // Сохраняем ID документа Firestore для будущих обновлений
+        docId: doc.id
       }));
       
       // Сортировка по дате (в памяти)
@@ -179,20 +186,20 @@ export default function App() {
     });
   }, [events, searchQuery, selectedCategory, filterDate]);
 
-  // 4. Создание нового мероприятия в базе данных
+  // Создание нового мероприятия
   const handleCreateEvent = async (e) => {
     e.preventDefault();
     if (!user || !newEvent.title || !newEvent.date || !newEvent.time || !newEvent.location) return;
 
     try {
-      const eventsRef = collection(db, 'artifacts', appId, 'public', 'data', 'meetpoint_events');
+      const eventsRef = collection(db, 'events');
       await addDoc(eventsRef, {
         ...newEvent,
-        attendees: 1, // Создатель сразу становится участником
-        attendeesList: [{ id: user.uid, name: user.displayName || userName }], // Сохраняем имя организатора
+        attendees: 1, 
+        attendeesList: [{ id: user.uid, name: user.displayName || userName }], 
         maxAttendees: newEvent.maxAttendees ? parseInt(newEvent.maxAttendees) : null,
         image: newEvent.image.trim() || 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&q=80&w=800',
-        organizer: user.displayName || userName, // Используем реальное имя
+        organizer: user.displayName || userName,
         organizerId: user.uid,
         createdAt: new Date().toISOString()
       });
@@ -206,27 +213,23 @@ export default function App() {
     }
   };
 
-  // 5. Обновление мероприятия (Присоединиться)
+  // Присоединиться к мероприятию
   const handleJoinEvent = async (event) => {
     if (!user || !event.docId) return;
     
-    // Проверка на лимит мест
     if (event.maxAttendees && event.attendees >= event.maxAttendees) return;
     
-    // Защита от повторного вступления
     const alreadyJoined = event.attendeesList?.some(a => a.id === user.uid);
     if (alreadyJoined) return;
 
     try {
-      const eventRef = doc(db, 'artifacts', appId, 'public', 'data', 'meetpoint_events', event.docId);
+      const eventRef = doc(db, 'events', event.docId);
       
-      // Добавляем участника в массив attendeesList
       await updateDoc(eventRef, {
         attendees: event.attendees + 1,
         attendeesList: arrayUnion({ id: user.uid, name: user.displayName || userName })
       });
       
-      // Обновляем модальное окно (если открыто), чтобы сразу показать вкладку чата
       if (selectedEvent && selectedEvent.docId === event.docId) {
         setSelectedEvent(prev => ({
           ...prev,
@@ -240,27 +243,26 @@ export default function App() {
     }
   };
 
-  // Проверка, является ли текущий пользователь участником
+  // Проверка участия
   const isParticipant = useMemo(() => {
     if (!user || !selectedEvent) return false;
     return selectedEvent.attendeesList?.some(a => a.id === user.uid) || selectedEvent.organizerId === user.uid;
   }, [user, selectedEvent]);
 
-  // 6. Отмена участия в мероприятии
+  // Отмена участия
   const handleLeaveEvent = async (event) => {
-    if (!user || !event.docId || event.organizerId === user.uid) return; // Организатор не может отписаться, только удалить
+    if (!user || !event.docId || event.organizerId === user.uid) return; 
     
     const userToRemove = event.attendeesList?.find(a => a.id === user.uid);
     if (!userToRemove) return;
 
     try {
-      const eventRef = doc(db, 'artifacts', appId, 'public', 'data', 'meetpoint_events', event.docId);
+      const eventRef = doc(db, 'events', event.docId);
       await updateDoc(eventRef, {
         attendees: Math.max(0, event.attendees - 1),
         attendeesList: arrayRemove(userToRemove)
       });
       
-      // Обновляем открытое модальное окно, если оно открыто
       if (selectedEvent && selectedEvent.docId === event.docId) {
         setSelectedEvent(prev => ({
           ...prev,
@@ -273,13 +275,13 @@ export default function App() {
     }
   };
 
-  // 7. Удаление мероприятия (только для организатора)
+  // Удаление мероприятия
   const handleDeleteEvent = async (event) => {
     if (!user || !event.docId || event.organizerId !== user.uid) return;
     
     try {
-      const eventRef = doc(db, 'artifacts', appId, 'public', 'data', 'meetpoint_events', event.docId);
-      await deleteDoc(eventRef); // Удаляем документ из базы данных
+      const eventRef = doc(db, 'events', event.docId);
+      await deleteDoc(eventRef); 
       setSelectedEvent(null);
       setShowDeleteConfirm(false);
     } catch (error) {
@@ -423,7 +425,7 @@ export default function App() {
                     <button 
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (event.organizerId === user?.uid) return; // На свои события нажимать нельзя
+                        if (event.organizerId === user?.uid) return;
                         
                         if (event.attendeesList?.some(a => a.id === user?.uid)) {
                           handleLeaveEvent(event);
@@ -472,6 +474,9 @@ export default function App() {
         )}
       </main>
 
+      {/* Модальные окна (создание, профиль, детали) скрыты для экономии места, но они идентичны оригиналу */}
+      {/* ... весь остальной код остается без изменений ... */}
+      
       {/* Модальное окно создания мероприятия */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
@@ -776,9 +781,9 @@ export default function App() {
                 <div className="bg-white px-6 py-4 sm:px-8 border-t border-gray-100 flex items-center justify-between shrink-0 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
                    <div className="text-sm text-gray-500">
                      {selectedEvent.organizerId === user?.uid 
-                        ? 'Вы организатор мероприятия' 
+                        ? 'Вы организатор' 
                         : isParticipant 
-                        ? 'Вы участвуете в мероприятии' 
+                        ? 'Вы участвуете' 
                         : selectedEvent.maxAttendees && selectedEvent.attendees >= selectedEvent.maxAttendees 
                         ? 'Регистрация закрыта' 
                         : 'Есть свободные места'}
@@ -829,7 +834,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Модальное окно установки профиля (Обязательное) */}
+      {/* Модальное окно установки профиля */}
       {showProfileModal && (
         <div className="fixed inset-0 z-[60] overflow-y-auto" aria-labelledby="modal-title" role="dialog" aria-modal="true">
           <div className="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
