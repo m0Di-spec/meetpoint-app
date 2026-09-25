@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MeetPoint</string>
+    <string name="title_activity_main">MeetPoint</string>
+    <string name="package_name">com.meetpoint.app</string>
+    <string name="custom_url_scheme">com.meetpoint.app</string>
+</resources>
