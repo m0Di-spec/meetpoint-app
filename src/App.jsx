@@ -1,16 +1,16 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Navigation, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut } from 'lucide-react';
+import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Navigation, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle } from 'lucide-react';
 
-// ИМПОРТЫ FIREBASE (Убрали Storage, оставили только Auth и Firestore)
+// ИМПОРТЫ FIREBASE
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, updateProfile, signOut } from 'firebase/auth';
-import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc } from 'firebase/firestore';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut } from 'firebase/auth';
+import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, setDoc, getDoc } from 'firebase/firestore';
 
 // ==========================================
 // 🚨 ВСТАВЬТЕ СВОИ КЛЮЧИ FIREBASE СЮДА
 // ==========================================
 const firebaseConfig = {
- apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
+  apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
   authDomain: "meet-point-73afa.firebaseapp.com",
   projectId: "meet-point-73afa",
   storageBucket: "meet-point-73afa.firebasestorage.app",
@@ -29,11 +29,17 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   
-  // Состояния для экрана авторизации
-  const [authMode, setAuthMode] = useState('login'); // 'login' или 'register'
+  // Авторизация
+  const [authMode, setAuthMode] = useState('login'); 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
+
+  // Профиль пользователя
+  const [userProfile, setUserProfile] = useState({ name: '', city: '', interests: '', avatar: '' });
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [isFirstLogin, setIsFirstLogin] = useState(false);
+  const [isProfileSaving, setIsProfileSaving] = useState(false);
 
   // Остальные состояния
   const [events, setEvents] = useState([]);
@@ -45,32 +51,62 @@ export default function App() {
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   
-  const [userName, setUserName] = useState('');
-  const [showProfileModal, setShowProfileModal] = useState(false);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [activeTab, setActiveTab] = useState('info'); 
   const messagesEndRef = useRef(null);
 
-  // Форма создания
   const [newEvent, setNewEvent] = useState({ title: '', description: '', date: '', time: '', location: '', category: 'Другое', maxAttendees: '' });
-  
-  // Фото (теперь храним сразу обработанную картинку)
   const [imagePreview, setImagePreview] = useState('');
   const [isUploading, setIsUploading] = useState(false);
 
+  // Функция ЖЕСТКОГО сжатия фото для БД (чтобы не превышать лимит 1 МБ)
+  const compressImage = (file, isAvatar = false) => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          // Аватарки делаем еще меньше (200px), обложки 400px
+          const MAX_WIDTH = isAvatar ? 200 : 400; 
+          const scaleSize = MAX_WIDTH / img.width;
+          canvas.width = MAX_WIDTH;
+          canvas.height = img.height * scaleSize;
+          
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          
+          // Качество сжатия 0.5 для экономии места
+          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.5); 
+          resolve(compressedBase64);
+        };
+        img.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   // Следим за тем, вошел пользователь или нет
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
-      setIsAuthLoading(false);
       if (currentUser) {
-        if (currentUser.displayName) {
-          setUserName(currentUser.displayName);
+        // Пытаемся загрузить профиль из БД
+        const docRef = doc(db, "users", currentUser.uid);
+        const docSnap = await getDoc(docRef);
+        
+        if (docSnap.exists()) {
+          setUserProfile(docSnap.data());
         } else {
+          // Если профиля нет (новая рега), показываем окно настройки
+          setIsFirstLogin(true);
           setShowProfileModal(true);
         }
+      } else {
+        setUserProfile({ name: '', city: '', interests: '', avatar: '' });
       }
+      setIsAuthLoading(false);
     });
     return () => unsubscribe();
   }, []);
@@ -84,33 +120,39 @@ export default function App() {
         await signInWithEmailAndPassword(auth, email, password);
       } else {
         await createUserWithEmailAndPassword(auth, email, password);
-        setShowProfileModal(true);
       }
     } catch (error) {
-      console.error(error);
       if (error.code === 'auth/email-already-in-use') setAuthError('Эта почта уже занята');
-      else if (error.code === 'auth/wrong-password' || error.code === 'auth/user-not-found' || error.code === 'auth/invalid-credential') setAuthError('Неверная почта или пароль');
+      else if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') setAuthError('Неверная почта или пароль');
       else if (error.code === 'auth/weak-password') setAuthError('Пароль слишком простой (минимум 6 символов)');
-      else setAuthError('Произошла ошибка. Проверьте данные.');
+      else setAuthError(`Ошибка: ${error.message}`);
     }
   };
 
   const handleLogout = async () => {
+    await signOut(auth);
+  };
+
+  // СОХРАНЕНИЕ ПРОФИЛЯ
+  const handleSaveProfile = async (e) => {
+    e.preventDefault();
+    if (!userProfile.name.trim() || !user) return;
+    setIsProfileSaving(true);
     try {
-      await signOut(auth);
+      await setDoc(doc(db, "users", user.uid), userProfile);
+      setShowProfileModal(false);
+      setIsFirstLogin(false);
     } catch (error) {
-      console.error("Ошибка при выходе:", error);
+      alert("Ошибка сохранения профиля: " + error.message);
+    } finally {
+      setIsProfileSaving(false);
     }
   };
 
-  const handleSaveProfile = async (e) => {
-    e.preventDefault();
-    if (!userName.trim() || !user) return;
-    try {
-      await updateProfile(user, { displayName: userName.trim() });
-      setShowProfileModal(false);
-    } catch (error) {
-      console.error("Ошибка сохранения профиля:", error);
+  const handleAvatarChange = async (e) => {
+    if (e.target.files && e.target.files[0]) {
+      const base64 = await compressImage(e.target.files[0], true);
+      setUserProfile({...userProfile, avatar: base64});
     }
   };
 
@@ -135,10 +177,10 @@ export default function App() {
     if (!newMessage.trim() || !user || !selectedEvent) return;
     try {
       const messagesRef = collection(db, 'events', selectedEvent.docId, 'messages');
-      await addDoc(messagesRef, { text: newMessage.trim(), userId: user.uid, userName: user.displayName || userName, createdAt: new Date().toISOString() });
+      await addDoc(messagesRef, { text: newMessage.trim(), userId: user.uid, userName: userProfile.name || 'Гость', userAvatar: userProfile.avatar || '', createdAt: new Date().toISOString() });
       setNewMessage('');
     } catch (error) {
-      console.error("Ошибка отправки сообщения:", error);
+      alert("Ошибка отправки: " + error.message);
     }
   };
 
@@ -151,6 +193,8 @@ export default function App() {
       eventsData.sort((a, b) => new Date(a.date) - new Date(b.date));
       setEvents(eventsData);
       setIsLoading(false);
+    }, (error) => {
+      alert("Ошибка загрузки ленты: " + error.message);
     });
     return () => unsubscribe();
   }, [user]);
@@ -164,66 +208,38 @@ export default function App() {
     });
   }, [events, searchQuery, selectedCategory, filterDate]);
 
-  // МАГИЯ СЖАТИЯ ИЗОБРАЖЕНИЯ БЕЗ STORAGE
-  const handleImageChange = (e) => {
+  const handleEventImageChange = async (e) => {
     if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      const reader = new FileReader();
-      
-      reader.onload = (event) => {
-        const img = new Image();
-        img.onload = () => {
-          // Создаем виртуальный холст для сжатия
-          const canvas = document.createElement('canvas');
-          const MAX_WIDTH = 600; // Уменьшаем ширину до 600px для экономии места в БД
-          const scaleSize = MAX_WIDTH / img.width;
-          canvas.width = MAX_WIDTH;
-          canvas.height = img.height * scaleSize;
-          
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          
-          // Получаем легкий текстовый код картинки (jpeg, 70% качества)
-          const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7); 
-          setImagePreview(compressedBase64);
-        };
-        img.src = event.target.result;
-      };
-      
-      reader.readAsDataURL(file);
+      const base64 = await compressImage(e.target.files[0], false);
+      setImagePreview(base64);
     }
   };
 
-  // Создание мероприятия
   const handleCreateEvent = async (e) => {
     e.preventDefault();
     if (!user || !newEvent.title || !newEvent.date || !newEvent.time || !newEvent.location) return;
 
     setIsUploading(true);
-    
-    // Если картинку не выбрали, ставим красивую стандартную обложку
-    const finalImageUrl = imagePreview || 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&q=80&w=800';
+    const finalImageUrl = imagePreview || 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&q=80&w=600';
 
     try {
       const eventsRef = collection(db, 'events');
       await addDoc(eventsRef, {
         ...newEvent,
         attendees: 1, 
-        attendeesList: [{ id: user.uid, name: user.displayName || userName }], 
+        attendeesList: [{ id: user.uid, name: userProfile.name || 'Организатор', avatar: userProfile.avatar || '' }], 
         maxAttendees: newEvent.maxAttendees ? parseInt(newEvent.maxAttendees) : null,
-        image: finalImageUrl, // Сохраняем текстовый код картинки прямо в документ
-        organizer: user.displayName || userName,
+        image: finalImageUrl, 
+        organizer: userProfile.name || 'Организатор',
         organizerId: user.uid,
         createdAt: new Date().toISOString()
       });
 
-      // Очищаем форму
       setIsCreateModalOpen(false);
       setNewEvent({ title: '', description: '', date: '', time: '', location: '', category: 'Другое', maxAttendees: '' });
       setImagePreview('');
     } catch (error) {
-      console.error("Error creating event:", error);
-      alert("Ошибка при создании мероприятия.");
+      alert(`Ошибка при создании: ${error.message}\n(Возможно, фото слишком большое, выберите фото поменьше)`);
     } finally {
       setIsUploading(false);
     }
@@ -236,12 +252,15 @@ export default function App() {
 
     try {
       const eventRef = doc(db, 'events', event.docId);
-      await updateDoc(eventRef, { attendees: event.attendees + 1, attendeesList: arrayUnion({ id: user.uid, name: user.displayName || userName }) });
+      await updateDoc(eventRef, { 
+        attendees: event.attendees + 1, 
+        attendeesList: arrayUnion({ id: user.uid, name: userProfile.name || 'Участник', avatar: userProfile.avatar || '' }) 
+      });
       if (selectedEvent && selectedEvent.docId === event.docId) {
-        setSelectedEvent(prev => ({ ...prev, attendees: prev.attendees + 1, attendeesList: [...(prev.attendeesList || []), { id: user.uid, name: user.displayName || userName }] }));
+        setSelectedEvent(prev => ({ ...prev, attendees: prev.attendees + 1, attendeesList: [...(prev.attendeesList || []), { id: user.uid, name: userProfile.name, avatar: userProfile.avatar }] }));
         setActiveTab('chat');
       }
-    } catch (error) { console.error("Error joining event:", error); }
+    } catch (error) { alert("Ошибка присоединения: " + error.message); }
   };
 
   const isParticipant = useMemo(() => {
@@ -260,7 +279,7 @@ export default function App() {
       if (selectedEvent && selectedEvent.docId === event.docId) {
         setSelectedEvent(prev => ({ ...prev, attendees: Math.max(0, prev.attendees - 1), attendeesList: prev.attendeesList.filter(a => a.id !== user.uid) }));
       }
-    } catch (error) { console.error("Error leaving event:", error); }
+    } catch (error) { alert("Ошибка выхода: " + error.message); }
   };
 
   const handleDeleteEvent = async (event) => {
@@ -270,7 +289,7 @@ export default function App() {
       await deleteDoc(eventRef); 
       setSelectedEvent(null);
       setShowDeleteConfirm(false);
-    } catch (error) { console.error("Error deleting event:", error); }
+    } catch (error) { alert("Ошибка удаления: " + error.message); }
   };
 
   // ЭКРАН ЗАГРУЗКИ
@@ -292,7 +311,7 @@ export default function App() {
               <Navigation className="w-8 h-8 text-white" />
             </div>
             <h1 className="text-3xl font-bold text-white mb-2">MeetPoint</h1>
-            <p className="text-indigo-100">Находите компанию для любых дел</p>
+            <p className="text-indigo-100">Ваши люди, ваши правила</p>
           </div>
           
           <div className="p-8">
@@ -312,7 +331,7 @@ export default function App() {
                 <input type="password" required value={password} onChange={e => setPassword(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none transition-all" placeholder="Минимум 6 символов" />
               </div>
               <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-3.5 rounded-xl hover:bg-indigo-700 active:scale-95 transition-all flex justify-center items-center gap-2">
-                {authMode === 'login' ? <><LogIn className="w-5 h-5"/> Войти</> : <><UserPlus className="w-5 h-5"/> Зарегистрироваться</>}
+                {authMode === 'login' ? <><LogIn className="w-5 h-5"/> Войти</> : <><UserPlus className="w-5 h-5"/> Создать аккаунт</>}
               </button>
             </form>
           </div>
@@ -321,7 +340,7 @@ export default function App() {
     );
   }
 
-  // ОСНОВНОЙ ИНТЕРФЕЙС ПРИЛОЖЕНИЯ
+  // ОСНОВНОЙ ИНТЕРФЕЙС
   return (
     <div className="min-h-screen bg-gray-50 text-slate-800 font-sans">
       
@@ -331,16 +350,22 @@ export default function App() {
             <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-inner">
               <Navigation className="w-5 h-5 text-white" />
             </div>
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600">MeetPoint</h1>
+            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600 hidden sm:block">MeetPoint</h1>
           </div>
           
-          <div className="flex items-center gap-2 sm:gap-4">
-            <button onClick={handleLogout} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors" title="Выйти">
-              <LogOut className="w-5 h-5" />
-            </button>
+          <div className="flex items-center gap-3">
             <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-full text-sm font-medium transition-all shadow-sm active:scale-95">
               <Plus className="w-4 h-4" />
               <span className="hidden sm:inline">Создать</span>
+            </button>
+            
+            {/* Кнопка Профиля */}
+            <button onClick={() => setShowProfileModal(true)} className="relative w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center overflow-hidden border border-gray-200 hover:border-indigo-400 transition-colors">
+              {userProfile.avatar ? (
+                <img src={userProfile.avatar} className="w-full h-full object-cover" alt="Профиль" />
+              ) : (
+                <UserCircle className="w-6 h-6 text-gray-400" />
+              )}
             </button>
           </div>
         </div>
@@ -354,7 +379,6 @@ export default function App() {
               <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none"><Search className="h-5 w-5 text-gray-400" /></div>
               <input type="text" placeholder="Искать..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="block w-full pl-10 pr-3 py-2.5 border border-gray-300 rounded-xl leading-5 bg-white focus:ring-2 focus:ring-indigo-500 outline-none" />
             </div>
-            <input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="block w-[130px] px-2 py-2.5 border border-gray-300 rounded-xl bg-white focus:ring-2 focus:ring-indigo-500 outline-none" />
           </div>
 
           <div className="flex overflow-x-auto pb-2 sm:pb-0 hide-scrollbar gap-2">
@@ -396,11 +420,63 @@ export default function App() {
         ) : (
           <div className="text-center py-20 bg-white rounded-2xl border border-gray-100 border-dashed">
             <h3 className="text-lg font-medium text-gray-900">Пока ничего нет</h3>
-            <p className="text-gray-500 mb-4">Станьте первым, кто создаст мероприятие!</p>
+            <p className="text-gray-500 mb-4">Станьте первым, кто создаст мероприятие в этой категории!</p>
           </div>
         )}
       </main>
-      
+
+      {/* МОДАЛКА ПРОФИЛЯ */}
+      {showProfileModal && (
+        <div className="fixed inset-0 z-[60] bg-gray-900/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="px-6 py-4 border-b flex justify-between items-center shrink-0">
+              <h3 className="text-xl font-bold">{isFirstLogin ? 'Добро пожаловать!' : 'Ваш Профиль'}</h3>
+              {!isFirstLogin && <button onClick={() => setShowProfileModal(false)} className="p-2 hover:bg-gray-100 rounded-full"><X className="w-5 h-5" /></button>}
+            </div>
+
+            <form id="profileForm" onSubmit={handleSaveProfile} className="p-6 overflow-y-auto space-y-4 text-left">
+              {isFirstLogin && <p className="text-gray-500 mb-4 text-center">Расскажите немного о себе, чтобы другие могли вас узнать.</p>}
+              
+              <div className="flex flex-col items-center mb-4">
+                <div className="relative w-24 h-24 bg-gray-100 rounded-full border-2 border-dashed border-gray-300 flex items-center justify-center overflow-hidden group cursor-pointer">
+                  {userProfile.avatar ? (
+                    <img src={userProfile.avatar} alt="Avatar" className="w-full h-full object-cover" />
+                  ) : (
+                    <Camera className="w-8 h-8 text-gray-400 group-hover:scale-110 transition-transform" />
+                  )}
+                  <input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
+                </div>
+                <span className="text-xs text-gray-400 mt-2">Нажмите, чтобы изменить</span>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Имя и Фамилия *</label>
+                <input required type="text" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Иван Иванов" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Город</label>
+                <input type="text" value={userProfile.city} onChange={e => setUserProfile({...userProfile, city: e.target.value})} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Москва" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">О себе и интересы</label>
+                <textarea value={userProfile.interests} onChange={e => setUserProfile({...userProfile, interests: e.target.value})} className="w-full px-4 py-2 border rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" rows="3" placeholder="Люблю кино, играю в настолки по пятницам..."></textarea>
+              </div>
+            </form>
+
+            <div className="p-4 border-t bg-gray-50 shrink-0 flex flex-col gap-3">
+              <button type="submit" form="profileForm" disabled={isProfileSaving} className="w-full bg-indigo-600 text-white font-bold py-3 rounded-xl hover:bg-indigo-700 transition-colors disabled:bg-indigo-400">
+                {isProfileSaving ? 'Сохранение...' : (isFirstLogin ? 'Начать пользоваться' : 'Сохранить изменения')}
+              </button>
+              {!isFirstLogin && (
+                <button onClick={handleLogout} className="w-full bg-red-50 text-red-600 font-bold py-3 rounded-xl hover:bg-red-100 transition-colors flex items-center justify-center gap-2">
+                  <LogOut className="w-5 h-5" /> Выйти из аккаунта
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* МОДАЛКА СОЗДАНИЯ С ФОТО */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900/50 backdrop-blur-sm p-4 flex items-center justify-center">
@@ -411,8 +487,6 @@ export default function App() {
             </div>
             
             <form id="createEventForm" onSubmit={handleCreateEvent} className="p-6 overflow-y-auto space-y-4">
-              
-              {/* ЗАГРУЗКА ФОТО (Переделана на Base64) */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Обложка</label>
                 <div className="relative w-full h-40 bg-gray-50 border-2 border-dashed border-gray-300 rounded-2xl flex flex-col items-center justify-center overflow-hidden group hover:bg-gray-100 transition-colors cursor-pointer">
@@ -424,8 +498,7 @@ export default function App() {
                       <span className="text-sm font-medium">Сделать фото или выбрать</span>
                     </div>
                   )}
-                  {/* Скрытый инпут вызывает камеру/галерею */}
-                  <input type="file" accept="image/*" onChange={handleImageChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
+                  <input type="file" accept="image/*" onChange={handleEventImageChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" />
                 </div>
               </div>
 
@@ -474,26 +547,12 @@ export default function App() {
         </div>
       )}
 
-      {/* МОДАЛКА ПРОФИЛЯ ПРИ ПЕРВОМ ВХОДЕ */}
-      {showProfileModal && (
-        <div className="fixed inset-0 z-[60] bg-gray-900/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
-            <h3 className="text-2xl font-bold mb-2">Как вас зовут?</h3>
-            <p className="text-gray-500 mb-6">Это имя будут видеть другие участники</p>
-            <form onSubmit={handleSaveProfile}>
-              <input type="text" required value={userName} onChange={e => setUserName(e.target.value)} className="w-full px-4 py-4 border-2 rounded-xl text-center text-lg mb-6 outline-none focus:border-indigo-500" placeholder="Ваше Имя" />
-              <button type="submit" className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl hover:bg-indigo-700">Начать</button>
-            </form>
-          </div>
-        </div>
-      )}
-
       {/* ДЕТАЛИ И ЧАТ */}
       {selectedEvent && (
         <div className="fixed inset-0 z-50 bg-gray-900/50 backdrop-blur-sm p-4 flex items-end sm:items-center justify-center">
           <div className="bg-white rounded-3xl w-full max-w-2xl flex flex-col max-h-[90vh] sm:max-h-[85vh] overflow-hidden">
             <div className="relative h-64 shrink-0">
-              <img src={selectedEvent.image} className="w-full h-full object-cover" />
+              <img src={selectedEvent.image} className="w-full h-full object-cover" alt="Обложка" />
               <button onClick={() => { setSelectedEvent(null); setActiveTab('info'); }} className="absolute top-4 right-4 bg-black/40 text-white p-2 rounded-full"><X className="w-5 h-5" /></button>
               <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 to-transparent p-6 pt-20">
                 <span className="px-3 py-1 bg-indigo-500 text-white text-xs font-bold rounded-full mb-3 inline-block">{selectedEvent.category}</span>
@@ -515,13 +574,31 @@ export default function App() {
                     <div className="flex gap-3"><div className="bg-indigo-50 p-2 rounded-xl"><Users className="w-5 h-5 text-indigo-600" /></div><div><p className="font-semibold">{selectedEvent.attendees} {selectedEvent.maxAttendees && `из ${selectedEvent.maxAttendees}`}</p><p className="text-sm text-gray-500">участников</p></div></div>
                   </div>
                   <p className="text-gray-600 mb-6 whitespace-pre-wrap">{selectedEvent.description}</p>
+                  
+                  {/* СПИСОК УЧАСТНИКОВ */}
+                  <div className="mt-6 border-t pt-6">
+                    <h4 className="font-bold text-gray-800 mb-4">Участники</h4>
+                    <div className="flex flex-wrap gap-3">
+                      {selectedEvent.attendeesList?.map(attendee => (
+                        <div key={attendee.id} className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-100">
+                          {attendee.avatar ? (
+                            <img src={attendee.avatar} className="w-6 h-6 rounded-full object-cover" alt="avatar" />
+                          ) : (
+                            <UserCircle className="w-6 h-6 text-gray-400" />
+                          )}
+                          <span className="text-sm font-medium text-gray-700">{attendee.name}</span>
+                          {attendee.id === selectedEvent.organizerId && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full ml-1">Орг</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="flex flex-col h-full min-h-[300px]">
                   {!isParticipant ? (
                     <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
                       <MessageSquare className="w-12 h-12 text-gray-300 mb-3" />
-                      <p className="text-gray-500 mb-4">Присоединитесь, чтобы общаться</p>
+                      <p className="text-gray-500 mb-4">Присоединитесь, чтобы общаться в чате</p>
                       <button onClick={() => handleJoinEvent(selectedEvent)} className="px-6 py-2 bg-indigo-600 text-white rounded-full font-medium">Присоединиться</button>
                     </div>
                   ) : (
@@ -529,7 +606,10 @@ export default function App() {
                       <div className="flex-1 p-4 space-y-4 overflow-y-auto">
                         {messages.map(msg => (
                           <div key={msg.id} className={`flex flex-col ${msg.userId === user?.uid ? 'items-end' : 'items-start'}`}>
-                            <div className="text-[10px] text-gray-400 mb-1 px-1">{msg.userName}</div>
+                            <div className="flex items-center gap-1.5 mb-1 px-1">
+                              {msg.userId !== user?.uid && msg.userAvatar && <img src={msg.userAvatar} className="w-4 h-4 rounded-full" alt="av" />}
+                              <span className="text-[10px] text-gray-400">{msg.userName}</span>
+                            </div>
                             <div className={`px-4 py-2 rounded-2xl max-w-[85%] ${msg.userId === user?.uid ? 'bg-indigo-600 text-white rounded-tr-none' : 'bg-white text-gray-800 border rounded-tl-none'}`}>{msg.text}</div>
                           </div>
                         ))}
