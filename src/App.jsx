@@ -1,10 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User } from 'lucide-react';
+import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle } from 'lucide-react';
 
 // ИМПОРТЫ FIREBASE
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, setDoc, getDoc } from 'firebase/firestore';
+import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, setDoc, getDoc, query, where } from 'firebase/firestore';
 
 // ==========================================
 // 🚨 ВСТАВЬТЕ СВОИ КЛЮЧИ FIREBASE СЮДА
@@ -43,7 +43,7 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // НАВИГАЦИЯ НИЖНЕГО МЕНЮ: 'all', 'going', 'organized', 'profile'
+  // НАВИГАЦИЯ НИЖНЕГО МЕНЮ: 'all', 'going', 'organized', 'chats', 'profile'
   const [navTab, setNavTab] = useState('all'); 
   
   const [searchQuery, setSearchQuery] = useState('');
@@ -60,6 +60,7 @@ export default function App() {
   const [newMessage, setNewMessage] = useState('');
   const [activeTab, setActiveTab] = useState('info'); 
   const messagesEndRef = useRef(null);
+  const directMessagesEndRef = useRef(null);
 
   const [newEvent, setNewEvent] = useState({ title: '', description: '', city: '', date: '', time: '', location: '', category: 'Другое', maxAttendees: '' });
   const [imagePreview, setImagePreview] = useState('');
@@ -69,15 +70,21 @@ export default function App() {
   const [viewingUser, setViewingUser] = useState(null);
   const [isViewingUserLoading, setIsViewingUserLoading] = useState(false);
 
+  // ЛИЧНЫЕ СООБЩЕНИЯ (DIRECT MESSAGES)
+  const [userChats, setUserChats] = useState([]);
+  const [activeDirectChat, setActiveDirectChat] = useState(null);
+  const [directMessages, setDirectMessages] = useState([]);
+  const [newDirectMessage, setNewDirectMessage] = useState('');
+
   // === БЛОКИРОВКА ПРОКРУТКИ ФОНА ===
   useEffect(() => {
-    if (isFirstLogin || isCreateModalOpen || selectedEvent || viewingUser) {
+    if (isFirstLogin || isCreateModalOpen || selectedEvent || viewingUser || activeDirectChat) {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = 'unset';
     }
     return () => { document.body.style.overflow = 'unset'; };
-  }, [isFirstLogin, isCreateModalOpen, selectedEvent, viewingUser]);
+  }, [isFirstLogin, isCreateModalOpen, selectedEvent, viewingUser, activeDirectChat]);
 
   const compressImage = (file, isAvatar = false) => {
     return new Promise((resolve) => {
@@ -111,7 +118,7 @@ export default function App() {
           if (docSnap.data().city) setNewEvent(prev => ({...prev, city: docSnap.data().city}));
           setIsFirstLogin(false);
         } else {
-          setIsFirstLogin(true); // Заставляем заполнить профиль при первой регистрации
+          setIsFirstLogin(true);
         }
       } else {
         setUserProfile({ name: '', city: '', interests: '', avatar: '' });
@@ -156,7 +163,6 @@ export default function App() {
     try {
       await setDoc(doc(db, "users", user.uid), userProfile);
       setIsFirstLogin(false);
-      // Если мы сохраняем из вкладки профиля, то просто оставляем как есть, появится уведомление или кнопка поменяет статус
     } catch (error) { alert("Ошибка сохранения: " + error.message); } 
     finally { setIsProfileSaving(false); }
   };
@@ -168,34 +174,101 @@ export default function App() {
     }
   };
 
-  // Клик по пользователю (организатор, участник, чат)
+  // Клик по пользователю
   const handleUserClick = async (clickedUserId) => {
     if (!clickedUserId) return;
     if (clickedUserId === user?.uid) {
-      // Если кликнули на себя — закрываем событие и переходим в свой профиль
       setSelectedEvent(null);
       setNavTab('profile');
       return;
     }
-    
     setIsViewingUserLoading(true);
     try {
       const docRef = doc(db, 'users', clickedUserId);
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
-        setViewingUser(docSnap.data());
+        setViewingUser({ ...docSnap.data(), id: clickedUserId }); // Сохраняем ID для создания чата
       } else {
-        alert("Информация о пользователе не найдена");
+        alert("Пользователь не найден");
       }
-    } catch (error) {
-      console.error("Ошибка при загрузке профиля:", error);
-    } finally {
-      setIsViewingUserLoading(false);
+    } catch (error) { console.error(error); } 
+    finally { setIsViewingUserLoading(false); }
+  };
+
+  // ================= ЛИЧНЫЕ СООБЩЕНИЯ (ЛОГИКА) =================
+  // 1. Загрузка списка диалогов
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'direct_chats'), where('participants', 'array-contains', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const chats = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Сортируем локально по дате обновления, чтобы не заставлять создавать индекс в Firebase
+      chats.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+      setUserChats(chats);
+    });
+    return () => unsubscribe();
+  }, [user]);
+
+  // 2. Создание или открытие чата с пользователем
+  const handleStartDirectChat = async (partner) => {
+    if (!user || !partner) return;
+    // Ищем, есть ли уже чат с этим человеком
+    const existingChat = userChats.find(chat => chat.participants.includes(partner.id));
+    
+    if (existingChat) {
+      setViewingUser(null);
+      setActiveDirectChat({ id: existingChat.id, partner });
+    } else {
+      // Создаем новый чат
+      try {
+        const chatData = {
+          participants: [user.uid, partner.id],
+          users: {
+            [user.uid]: { name: userProfile.name, avatar: userProfile.avatar },
+            [partner.id]: { name: partner.name, avatar: partner.avatar }
+          },
+          updatedAt: new Date().toISOString()
+        };
+        const newChatRef = await addDoc(collection(db, 'direct_chats'), chatData);
+        setViewingUser(null);
+        setActiveDirectChat({ id: newChatRef.id, partner });
+      } catch (error) {
+        alert("Ошибка создания чата: " + error.message);
+      }
     }
   };
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // 3. Загрузка сообщений внутри активного личного чата
+  useEffect(() => {
+    if (!user || !activeDirectChat) { setDirectMessages([]); return; }
+    const messagesRef = collection(db, 'direct_chats', activeDirectChat.id, 'messages');
+    const unsubscribe = onSnapshot(messagesRef, (snapshot) => {
+      const msgs = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+      msgs.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      setDirectMessages(msgs);
+    });
+    return () => unsubscribe();
+  }, [user, activeDirectChat]);
 
+  // Скролл вниз
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => { directMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [directMessages]);
+
+  const handleSendDirectMessage = async (e) => {
+    e.preventDefault();
+    if (!newDirectMessage.trim() || !user || !activeDirectChat) return;
+    try {
+      const messagesRef = collection(db, 'direct_chats', activeDirectChat.id, 'messages');
+      const now = new Date().toISOString();
+      await addDoc(messagesRef, { text: newDirectMessage.trim(), userId: user.uid, createdAt: now });
+      // Обновляем время последнего сообщения в самом чате
+      await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { updatedAt: now });
+      setNewDirectMessage('');
+    } catch (error) { alert("Ошибка отправки: " + error.message); }
+  };
+  // ==============================================================
+
+  // События (Глобальные)
   useEffect(() => {
     if (!user || !selectedEvent) { setMessages([]); return; }
     const messagesRef = collection(db, 'events', selectedEvent.docId, 'messages');
@@ -331,25 +404,25 @@ export default function App() {
   if (!user) {
     return (
       <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex flex-col items-center justify-center p-4">
-        <div className="w-full max-w-md bg-white rounded-[32px] shadow-2xl overflow-hidden border border-gray-100">
-          <div className="bg-gradient-to-r from-orange-500 to-purple-600 p-10 text-center" style={{ paddingTop: 'max(env(safe-area-inset-top), 2.5rem)' }}>
+        <div className="w-full max-w-md bg-white/70 backdrop-blur-xl rounded-[32px] shadow-2xl overflow-hidden border border-white/50">
+          <div className="bg-gradient-to-r from-orange-400 to-purple-500 p-10 text-center" style={{ paddingTop: 'max(env(safe-area-inset-top), 2.5rem)' }}>
             <h1 className="text-4xl font-extrabold text-white mb-2 tracking-tight">MeetPoint</h1>
-            <p className="text-orange-100 font-medium text-lg">Ваши люди, ваши правила</p>
+            <p className="text-white/80 font-medium text-lg">Ваши люди, ваши правила</p>
           </div>
           <div className="p-8">
-            <div className="flex gap-4 mb-8 bg-gray-50 p-1.5 rounded-full">
+            <div className="flex gap-4 mb-8 bg-gray-50/50 p-1.5 rounded-full">
               <button onClick={() => {setAuthMode('login'); setAuthError(''); setAuthMessage('');}} className={`flex-1 py-2.5 font-bold text-sm rounded-full transition-all ${authMode === 'login' ? 'bg-white shadow-sm text-purple-700' : 'text-gray-500 hover:text-gray-700'}`}>Вход</button>
               <button onClick={() => {setAuthMode('register'); setAuthError(''); setAuthMessage('');}} className={`flex-1 py-2.5 font-bold text-sm rounded-full transition-all ${authMode === 'register' ? 'bg-white shadow-sm text-purple-700' : 'text-gray-500 hover:text-gray-700'}`}>Регистрация</button>
             </div>
             <form onSubmit={handleAuth} className="space-y-5">
-              {authError && <div className="p-4 bg-red-50 text-red-600 text-sm rounded-2xl text-center font-semibold border border-red-100">{authError}</div>}
-              {authMessage && <div className="p-4 bg-green-50 text-green-600 text-sm rounded-2xl text-center font-semibold border border-green-100">{authMessage}</div>}
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Email</label><input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none text-gray-800" placeholder="ваша@почта.com" /></div>
+              {authError && <div className="p-4 bg-red-50 text-red-600 text-sm rounded-3xl text-center font-semibold border border-red-100">{authError}</div>}
+              {authMessage && <div className="p-4 bg-green-50 text-green-600 text-sm rounded-3xl text-center font-semibold border border-green-100">{authMessage}</div>}
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Email</label><input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-3xl focus:ring-2 focus:ring-purple-500 outline-none text-gray-800 transition-all" placeholder="ваша@почта.com" /></div>
               <div>
-                <div className="flex justify-between items-center mb-1.5 ml-1 mr-1"><label className="block text-sm font-bold text-gray-700">Пароль</label>{authMode === 'login' && <button type="button" onClick={handleResetPassword} className="text-xs text-orange-500 font-bold hover:text-orange-600">Забыли?</button>}</div>
-                <div className="relative"><input type={showPassword ? "text" : "password"} required value={password} onChange={e => setPassword(e.target.value)} className="w-full pl-5 pr-12 py-3.5 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none text-gray-800" placeholder="Минимум 6 символов" /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-3.5 text-gray-400 hover:text-purple-500 transition-colors">{showPassword ? <EyeOff className="w-5 h-5"/> : <Eye className="w-5 h-5"/>}</button></div>
+                <div className="flex justify-between items-center mb-1.5 ml-1 mr-1"><label className="block text-sm font-bold text-gray-700">Пароль</label>{authMode === 'login' && <button type="button" onClick={handleResetPassword} className="text-xs text-orange-500 font-bold hover:text-orange-600 transition-colors">Забыли?</button>}</div>
+                <div className="relative"><input type={showPassword ? "text" : "password"} required value={password} onChange={e => setPassword(e.target.value)} className="w-full pl-5 pr-12 py-3.5 bg-gray-50 border-none rounded-3xl focus:ring-2 focus:ring-purple-500 outline-none text-gray-800 transition-all" placeholder="Минимум 6 символов" /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-3.5 text-gray-400 hover:text-purple-500 transition-colors">{showPassword ? <EyeOff className="w-5 h-5"/> : <Eye className="w-5 h-5"/>}</button></div>
               </div>
-              <button type="submit" className="w-full mt-6 bg-gradient-to-r from-orange-500 to-purple-600 text-white font-bold py-4 rounded-2xl hover:opacity-90 active:scale-[0.98] transition-all flex justify-center items-center gap-2 shadow-lg shadow-purple-200">{authMode === 'login' ? <><LogIn className="w-5 h-5"/> Войти в аккаунт</> : <><UserPlus className="w-5 h-5"/> Создать аккаунт</>}</button>
+              <button type="submit" className="w-full mt-6 bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:opacity-90 active:scale-[0.98] transition-all flex justify-center items-center gap-2 shadow-lg shadow-purple-200/50">{authMode === 'login' ? <><LogIn className="w-5 h-5"/> Войти в аккаунт</> : <><UserPlus className="w-5 h-5"/> Создать аккаунт</>}</button>
             </form>
           </div>
         </div>
@@ -360,41 +433,41 @@ export default function App() {
   return (
     <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 text-slate-800 font-sans pb-24">
       
-      {/* ГЛАВНАЯ ШАПКА */}
-      <header className="bg-white/70 backdrop-blur-lg border-b border-gray-100 sticky top-0 z-30 pt-[env(safe-area-inset-top)]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between pb-2 mt-2">
-          <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-orange-500 to-purple-600 tracking-tight">MeetPoint</h1>
-          {/* Кнопка создания мероприятия перенесена сюда для удобства */}
-          <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center gap-2 bg-gradient-to-r from-orange-500 to-purple-600 text-white px-5 py-2.5 rounded-full text-sm font-bold shadow-md hover:shadow-lg transition-all active:scale-95"><Plus className="w-4 h-4" /><span className="hidden sm:inline">Создать</span></button>
-        </div>
-      </header>
+      {/* ГЛАВНАЯ ШАПКА (Скрыта в профиле и чатах, чтобы там был свой заголовок) */}
+      {navTab !== 'profile' && navTab !== 'chats' && (
+        <header className="bg-white/40 backdrop-blur-xl border-b border-white/50 sticky top-0 z-30 pt-[env(safe-area-inset-top)] transition-all">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between pb-2 mt-2">
+            <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-orange-500 to-purple-600 tracking-tight">MeetPoint</h1>
+            <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center gap-2 bg-gradient-to-r from-orange-400 to-purple-500 text-white px-5 py-2.5 rounded-full text-sm font-bold shadow-md hover:shadow-lg transition-all active:scale-95"><Plus className="w-4 h-4" /><span className="hidden sm:inline">Создать</span></button>
+          </div>
+        </header>
+      )}
 
-      {/* ОСНОВНОЙ КОНТЕНТ (ЗАВИСИТ ОТ ВЫБРАННОЙ ВКЛАДКИ НИЖНЕГО МЕНЮ) */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      {/* ОСНОВНОЙ КОНТЕНТ */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-[max(env(safe-area-inset-top),1.5rem)]">
         
         {/* ВКЛАДКИ: ВСЕ, Я ИДУ, МОИ (ЛЕНТА СОБЫТИЙ) */}
-        {navTab !== 'profile' && (
+        {(navTab === 'all' || navTab === 'going' || navTab === 'organized') && (
           <>
-            {/* ПОИСК И ФИЛЬТРЫ */}
-            <div className="mb-8">
+            <div className="mb-6">
               <div className="flex gap-3 mb-4">
                 <div className="relative flex-1">
                   <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none"><Search className="h-5 w-5 text-gray-400" /></div>
-                  <input type="text" placeholder="Найти событие..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="block w-full pl-11 pr-4 py-3.5 bg-white border-none rounded-full font-medium focus:ring-2 focus:ring-purple-500 outline-none shadow-sm" />
+                  <input type="text" placeholder="Найти событие..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="block w-full pl-11 pr-4 py-3.5 bg-white/70 backdrop-blur-md border border-white rounded-full font-medium focus:ring-2 focus:ring-purple-400 outline-none shadow-sm transition-all" />
                 </div>
-                <button onClick={() => setShowFilters(!showFilters)} className={`p-3.5 rounded-full transition-all shadow-sm flex items-center justify-center ${showFilters ? 'bg-purple-100 text-purple-600' : 'bg-white text-gray-500 hover:bg-gray-50'}`}><Filter className="w-5 h-5" /></button>
+                <button onClick={() => setShowFilters(!showFilters)} className={`p-3.5 rounded-full transition-all shadow-sm flex items-center justify-center border ${showFilters ? 'bg-purple-100 border-purple-200 text-purple-600' : 'bg-white/70 backdrop-blur-md border-white text-gray-500 hover:bg-white'}`}><Filter className="w-5 h-5" /></button>
               </div>
 
               {showFilters && (
-                <div className="grid grid-cols-2 gap-4 mb-5 p-5 bg-white/80 backdrop-blur-md rounded-[24px] shadow-sm border border-white">
-                  <div><label className="block text-xs font-bold text-gray-500 mb-1.5 ml-1">Город</label><input type="text" placeholder="Любой город" value={filterCity} onChange={(e) => setFilterCity(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border-none rounded-2xl text-sm font-medium focus:ring-2 focus:ring-purple-500 outline-none" /></div>
-                  <div><label className="block text-xs font-bold text-gray-500 mb-1.5 ml-1">Дата</label><input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border-none rounded-2xl text-sm font-medium focus:ring-2 focus:ring-purple-500 outline-none text-gray-600" /></div>
+                <div className="grid grid-cols-2 gap-4 mb-5 p-5 bg-white/70 backdrop-blur-xl rounded-[32px] shadow-sm border border-white">
+                  <div><label className="block text-xs font-bold text-gray-500 mb-1.5 ml-1">Город</label><input type="text" placeholder="Любой город" value={filterCity} onChange={(e) => setFilterCity(e.target.value)} className="w-full px-4 py-3 bg-white/80 border-none rounded-2xl text-sm font-medium focus:ring-2 focus:ring-purple-400 outline-none shadow-inner" /></div>
+                  <div><label className="block text-xs font-bold text-gray-500 mb-1.5 ml-1">Дата</label><input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="w-full px-4 py-3 bg-white/80 border-none rounded-2xl text-sm font-medium focus:ring-2 focus:ring-purple-400 outline-none text-gray-600 shadow-inner" /></div>
                 </div>
               )}
 
               <div className="flex overflow-x-auto pb-2 hide-scrollbar gap-2">
                 {CATEGORIES.map(category => (
-                  <button key={category} onClick={() => setSelectedCategory(category)} className={`whitespace-nowrap px-5 py-2.5 rounded-full text-sm font-bold transition-all ${selectedCategory === category ? 'bg-gray-900 text-white shadow-md' : 'bg-white text-gray-600 hover:bg-gray-50 shadow-sm border border-gray-100'}`}>{category}</button>
+                  <button key={category} onClick={() => setSelectedCategory(category)} className={`whitespace-nowrap px-5 py-2.5 rounded-full text-sm font-bold transition-all ${selectedCategory === category ? 'bg-gradient-to-r from-orange-400 to-purple-500 text-white shadow-md' : 'bg-white/70 backdrop-blur-md text-gray-600 hover:bg-white shadow-sm border border-white'}`}>{category}</button>
                 ))}
               </div>
             </div>
@@ -404,15 +477,15 @@ export default function App() {
             </h2>
             
             {isLoading ? (
-              <div className="flex flex-col items-center justify-center py-20"><Loader2 className="w-10 h-10 animate-spin text-orange-500" /></div>
+              <div className="flex flex-col items-center justify-center py-20"><Loader2 className="w-10 h-10 animate-spin text-purple-400" /></div>
             ) : filteredEvents.length > 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
                 {filteredEvents.map(event => (
-                  <div key={event.docId} onClick={() => setSelectedEvent(event)} className="bg-white rounded-[2rem] p-2 shadow-sm hover:shadow-xl transition-all cursor-pointer group flex flex-col h-full border border-white/50">
-                    <div className="relative h-48 bg-gray-100 rounded-[1.5rem] overflow-hidden">
+                  <div key={event.docId} onClick={() => setSelectedEvent(event)} className="bg-white/80 backdrop-blur-sm rounded-[32px] p-2 shadow-sm hover:shadow-xl transition-all cursor-pointer group flex flex-col h-full border border-white">
+                    <div className="relative h-48 bg-gray-100 rounded-[28px] overflow-hidden">
                       <img src={event.image} alt={event.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-out" />
                       <div className="absolute top-3 left-3 bg-white/90 backdrop-blur-md px-3.5 py-1.5 rounded-full text-xs font-bold text-purple-700 shadow-sm">{event.category}</div>
-                      {event.organizerId === user?.uid && <div className="absolute top-3 right-3 bg-gradient-to-r from-orange-500 to-purple-500 text-white px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm">Моё</div>}
+                      {event.organizerId === user?.uid && <div className="absolute top-3 right-3 bg-gradient-to-r from-orange-400 to-purple-500 text-white px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm">Моё</div>}
                     </div>
                     <div className="p-4 flex flex-col flex-grow">
                       <h3 className="text-xl font-extrabold text-gray-900 mb-3 line-clamp-2 leading-tight">{event.title}</h3>
@@ -420,16 +493,16 @@ export default function App() {
                         <div className="flex items-center text-sm text-gray-600 font-medium"><Calendar className="w-4 h-4 mr-2.5 text-purple-400" /> <span>{event.date} • {event.time}</span></div>
                         <div className="flex items-start text-sm text-gray-600 font-medium"><MapPin className="w-4 h-4 mr-2.5 text-orange-400 shrink-0 mt-0.5" /> <span className="line-clamp-2">{event.city ? `${event.city}, ` : ''}{event.location}</span></div>
                       </div>
-                      <div className="pt-4 border-t border-gray-50 flex items-center justify-between mt-auto">
+                      <div className="pt-4 border-t border-gray-100 flex items-center justify-between mt-auto">
                         <div className="flex items-center text-sm font-bold text-gray-500"><Users className="w-4 h-4 mr-1.5 text-gray-400" /> {event.attendees}{event.maxAttendees && `/${event.maxAttendees}`}</div>
-                        <button onClick={(e) => { e.stopPropagation(); if (event.organizerId === user?.uid) return; event.attendeesList?.some(a => a.id === user?.uid) ? handleLeaveEvent(event) : handleJoinEvent(event); }} className={`px-5 py-2 rounded-full text-sm font-bold z-10 transition-colors ${event.organizerId === user?.uid ? 'bg-gray-100 text-gray-600' : event.attendeesList?.some(a => a.id === user?.uid) ? 'bg-red-50 text-red-500 hover:bg-red-100' : 'bg-purple-50 text-purple-600 hover:bg-purple-100'}`}>{event.organizerId === user?.uid ? 'Орг' : event.attendeesList?.some(a => a.id === user?.uid) ? 'Не пойду' : 'Пойду'}</button>
+                        <button onClick={(e) => { e.stopPropagation(); if (event.organizerId === user?.uid) return; event.attendeesList?.some(a => a.id === user?.uid) ? handleLeaveEvent(event) : handleJoinEvent(event); }} className={`px-5 py-2.5 rounded-full text-sm font-bold z-10 transition-colors ${event.organizerId === user?.uid ? 'bg-gray-100 text-gray-600' : event.attendeesList?.some(a => a.id === user?.uid) ? 'bg-red-50 text-red-500 hover:bg-red-100' : 'bg-purple-50 text-purple-600 hover:bg-purple-100'}`}>{event.organizerId === user?.uid ? 'Орг' : event.attendeesList?.some(a => a.id === user?.uid) ? 'Не пойду' : 'Пойду'}</button>
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="text-center py-24 bg-white/50 backdrop-blur-sm rounded-[3rem] border border-white">
+              <div className="text-center py-24 bg-white/50 backdrop-blur-xl rounded-[32px] border border-white shadow-sm">
                 <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-5 shadow-sm"><Search className="w-8 h-8 text-gray-300"/></div>
                 <h3 className="text-xl font-extrabold text-gray-900">Событий не найдено</h3>
                 <p className="text-gray-500 mb-4 mt-2 max-w-sm mx-auto font-medium">Попробуйте изменить параметры поиска или создайте свое мероприятие!</p>
@@ -438,52 +511,93 @@ export default function App() {
           </>
         )}
 
+        {/* ВКЛАДКА: ЧАТЫ (DIRECT MESSAGES) */}
+        {navTab === 'chats' && (
+          <div className="w-full max-w-md mx-auto">
+            <h2 className="text-3xl font-extrabold text-gray-900 mb-6 pl-1 tracking-tight">Сообщения</h2>
+            
+            {userChats.length > 0 ? (
+              <div className="space-y-3">
+                {userChats.map(chat => {
+                  const partnerId = chat.participants.find(p => p !== user.uid);
+                  const partner = chat.users[partnerId];
+                  return (
+                    <div key={chat.id} onClick={() => setActiveDirectChat({ id: chat.id, partner: { id: partnerId, ...partner } })} className="bg-white/80 backdrop-blur-md rounded-[28px] p-4 flex items-center gap-4 cursor-pointer hover:bg-white transition-all shadow-sm border border-white">
+                      <div className="relative w-14 h-14 rounded-full overflow-hidden shrink-0 border-2 border-white shadow-sm">
+                        {partner?.avatar ? <img src={partner.avatar} className="w-full h-full object-cover" alt="av" /> : <UserCircle className="w-full h-full text-gray-300 bg-gray-50" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-extrabold text-gray-900 truncate text-lg">{partner?.name || 'Пользователь'}</h4>
+                        <p className="text-sm text-purple-500 font-medium truncate mt-0.5">Перейти к переписке...</p>
+                      </div>
+                      <ChevronLeft className="w-5 h-5 text-gray-300 rotate-180 shrink-0" />
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-center py-20 bg-white/50 backdrop-blur-xl rounded-[32px] border border-white shadow-sm mt-4">
+                <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-5 shadow-sm"><MessageCircle className="w-8 h-8 text-gray-300"/></div>
+                <h3 className="text-xl font-extrabold text-gray-900">У вас пока нет диалогов</h3>
+                <p className="text-gray-500 mt-2 max-w-xs mx-auto font-medium text-sm">Заходите в профили других людей и нажимайте "Написать сообщение", чтобы начать общение.</p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ВКЛАДКА: ПРОФИЛЬ (СОБСТВЕННЫЙ) */}
         {navTab === 'profile' && (
-          <div className="w-full max-w-md mx-auto mt-4 bg-white rounded-[32px] overflow-hidden shadow-sm border border-gray-100">
-            <div className="px-6 py-5 border-b border-gray-100 shrink-0">
-              <h3 className="text-2xl font-extrabold">Ваш Профиль</h3>
+          <div className="w-full max-w-md mx-auto bg-white/80 backdrop-blur-xl rounded-[32px] overflow-hidden shadow-sm border border-white">
+            <div className="px-6 py-5 border-b border-white/50 shrink-0">
+              <h3 className="text-2xl font-extrabold text-gray-900 tracking-tight">Настройки профиля</h3>
             </div>
             <form id="profileForm" onSubmit={handleSaveProfile} className="p-6 space-y-5">
-              <div className="flex flex-col items-center mb-2">
-                <div className="relative w-28 h-28 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <Camera className="w-8 h-8 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
-                <span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50 px-3 py-1 rounded-full">Сменить фото</span>
+              <div className="flex flex-col items-center mb-4">
+                <div className="relative w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
+                <span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50/50 backdrop-blur-sm border border-purple-100 px-4 py-1.5 rounded-full">Сменить фото</span>
               </div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Имя и Фамилия *</label><input required type="text" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none font-medium text-gray-800" placeholder="Как вас зовут?" /></div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Ваш город</label><input type="text" value={userProfile.city} onChange={e => setUserProfile({...userProfile, city: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none font-medium text-gray-800" placeholder="Москва" /></div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">О себе и интересы</label><textarea value={userProfile.interests} onChange={e => setUserProfile({...userProfile, interests: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none font-medium text-gray-800 resize-none" rows="3" placeholder="Расскажите немного о себе..."></textarea></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Имя и Фамилия *</label><input required type="text" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner transition-all" placeholder="Как вас зовут?" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Ваш город</label><input type="text" value={userProfile.city} onChange={e => setUserProfile({...userProfile, city: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner transition-all" placeholder="Москва" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">О себе и интересы</label><textarea value={userProfile.interests} onChange={e => setUserProfile({...userProfile, interests: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 resize-none shadow-inner transition-all" rows="3" placeholder="Расскажите немного о себе..."></textarea></div>
             </form>
-            <div className="p-5 border-t border-gray-50 bg-white shrink-0 flex flex-col gap-3">
-              <button type="submit" form="profileForm" disabled={isProfileSaving} className="w-full bg-gray-900 text-white font-bold py-4 rounded-2xl hover:bg-black transition-colors disabled:opacity-50">{isProfileSaving ? 'Сохранение...' : 'Сохранить изменения'}</button>
-              <button onClick={handleLogout} className="w-full text-red-500 font-bold py-3 rounded-2xl hover:bg-red-50 flex items-center justify-center gap-2 transition-colors"><LogOut className="w-4 h-4" /> Выйти из аккаунта</button>
+            <div className="p-5 border-t border-white/50 bg-white/50 shrink-0 flex flex-col gap-3">
+              <button type="submit" form="profileForm" disabled={isProfileSaving} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:opacity-90 transition-all shadow-md disabled:opacity-50">{isProfileSaving ? 'Сохранение...' : 'Сохранить изменения'}</button>
+              <button onClick={handleLogout} className="w-full text-red-500 font-bold py-4 rounded-3xl hover:bg-red-50 flex items-center justify-center gap-2 transition-colors border border-red-50"><LogOut className="w-5 h-5" /> Выйти из аккаунта</button>
             </div>
           </div>
         )}
 
       </main>
 
-      {/* НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ (ТАББАР) - СКРЫТА ЕСЛИ ОТКРЫТО СОБЫТИЕ */}
-      {!selectedEvent && (
-        <nav className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-gray-100 z-40 pb-[max(env(safe-area-inset-bottom),0.5rem)] shadow-[0_-10px_40px_rgba(0,0,0,0.03)]">
-          <div className="flex justify-around items-center h-16 max-w-md mx-auto px-2">
+      {/* НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ (ТАББАР) */}
+      {(!selectedEvent && !activeDirectChat && !isFirstLogin && !isCreateModalOpen && !viewingUser) && (
+        <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-2xl border-t border-white/50 z-40 pb-[max(env(safe-area-inset-bottom),0.5rem)] shadow-[0_-20px_40px_rgba(0,0,0,0.03)]">
+          <div className="flex justify-around items-center h-[72px] max-w-md mx-auto px-2">
             
-            <button onClick={() => setNavTab('all')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all ${navTab === 'all' ? 'text-purple-600' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-1.5 rounded-xl transition-all ${navTab === 'all' ? 'bg-purple-50' : ''}`}><Compass className="w-6 h-6" /></div>
+            <button onClick={() => setNavTab('all')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'all' ? 'text-purple-600 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
+              <div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'all' ? 'bg-purple-50 shadow-sm' : ''}`}><Compass className={`w-6 h-6 ${navTab==='all'?'fill-purple-50':''}`} /></div>
               <span className="text-[10px] font-bold">Все</span>
             </button>
             
-            <button onClick={() => setNavTab('going')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all ${navTab === 'going' ? 'text-orange-500' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-1.5 rounded-xl transition-all ${navTab === 'going' ? 'bg-orange-50' : ''}`}><Ticket className="w-6 h-6" /></div>
+            <button onClick={() => setNavTab('going')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'going' ? 'text-orange-500 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
+              <div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'going' ? 'bg-orange-50 shadow-sm' : ''}`}><Ticket className={`w-6 h-6 ${navTab==='going'?'fill-orange-50':''}`} /></div>
               <span className="text-[10px] font-bold">Я иду</span>
             </button>
             
-            <button onClick={() => setNavTab('organized')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all ${navTab === 'organized' ? 'text-purple-600' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-1.5 rounded-xl transition-all ${navTab === 'organized' ? 'bg-purple-50' : ''}`}><Crown className="w-6 h-6" /></div>
+            <button onClick={() => setNavTab('organized')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'organized' ? 'text-purple-600 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
+              <div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'organized' ? 'bg-purple-50 shadow-sm' : ''}`}><Crown className={`w-6 h-6 ${navTab==='organized'?'fill-purple-50':''}`} /></div>
               <span className="text-[10px] font-bold">Мои</span>
             </button>
 
-            <button onClick={() => setNavTab('profile')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all ${navTab === 'profile' ? 'text-blue-500' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-1.5 rounded-xl transition-all ${navTab === 'profile' ? 'bg-blue-50' : ''}`}><User className="w-6 h-6" /></div>
+            <button onClick={() => setNavTab('chats')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'chats' ? 'text-blue-500 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
+              <div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'chats' ? 'bg-blue-50 shadow-sm' : ''}`}><MessageCircle className={`w-6 h-6 ${navTab==='chats'?'fill-blue-50':''}`} /></div>
+              <span className="text-[10px] font-bold">Чаты</span>
+            </button>
+
+            <button onClick={() => setNavTab('profile')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'profile' ? 'text-gray-900 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
+              <div className={`p-1.5 rounded-full transition-all duration-300 border-2 ${navTab === 'profile' ? 'border-gray-900 shadow-sm' : 'border-transparent'}`}>
+                {userProfile.avatar ? <img src={userProfile.avatar} className="w-7 h-7 rounded-full object-cover" alt="av"/> : <User className="w-7 h-7" />}
+              </div>
               <span className="text-[10px] font-bold">Профиль</span>
             </button>
 
@@ -491,60 +605,60 @@ export default function App() {
         </nav>
       )}
 
-      {/* МОДАЛКА ПЕРВОГО ВХОДА (ОБЯЗАТЕЛЬНОЕ ЗАПОЛНЕНИЕ ПРОФИЛЯ) */}
+      {/* МОДАЛКА ПЕРВОГО ВХОДА */}
       {isFirstLogin && (
-        <div className="fixed inset-0 z-[100] bg-gray-900/40 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+        <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] animate-in fade-in duration-300">
           <div className="bg-white rounded-[32px] w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
-            <div className="px-6 py-5 border-b border-gray-100 shrink-0">
-              <h3 className="text-xl font-extrabold">Настройка профиля</h3>
-              <p className="text-sm text-gray-500 font-medium mt-1">Расскажите немного о себе, чтобы другие могли вас узнать.</p>
+            <div className="px-6 py-5 border-b border-gray-100 shrink-0 text-center">
+              <h3 className="text-2xl font-extrabold text-gray-900">Добро пожаловать!</h3>
+              <p className="text-sm text-gray-500 font-medium mt-1">Расскажите о себе, чтобы начать.</p>
             </div>
             <form id="firstProfileForm" onSubmit={handleSaveProfile} className="p-6 overflow-y-auto space-y-5">
               <div className="flex flex-col items-center mb-2">
-                <div className="relative w-28 h-28 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <Camera className="w-8 h-8 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
-                <span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50 px-3 py-1 rounded-full">Добавить фото</span>
+                <div className="relative w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
+                <span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50 px-4 py-1.5 rounded-full">Добавить фото</span>
               </div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Имя и Фамилия *</label><input required type="text" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none font-medium text-gray-800" placeholder="Как вас зовут?" /></div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Ваш город</label><input type="text" value={userProfile.city} onChange={e => setUserProfile({...userProfile, city: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none font-medium text-gray-800" placeholder="Москва" /></div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">О себе и интересы</label><textarea value={userProfile.interests} onChange={e => setUserProfile({...userProfile, interests: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-purple-500 outline-none font-medium text-gray-800 resize-none" rows="3" placeholder="Расскажите немного о себе..."></textarea></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Имя и Фамилия *</label><input required type="text" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner" placeholder="Как вас зовут?" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Ваш город</label><input type="text" value={userProfile.city} onChange={e => setUserProfile({...userProfile, city: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner" placeholder="Москва" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">О себе и интересы</label><textarea value={userProfile.interests} onChange={e => setUserProfile({...userProfile, interests: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 resize-none shadow-inner" rows="3" placeholder="Расскажите немного о себе..."></textarea></div>
             </form>
-            <div className="p-5 border-t border-gray-50 bg-white shrink-0">
-              <button type="submit" form="firstProfileForm" disabled={isProfileSaving} className="w-full bg-gradient-to-r from-orange-500 to-purple-600 text-white font-bold py-4 rounded-2xl hover:shadow-lg transition-all disabled:opacity-50">{isProfileSaving ? 'Сохранение...' : 'Начать пользоваться'}</button>
+            <div className="p-5 border-t border-gray-50 bg-gray-50/50 shrink-0">
+              <button type="submit" form="firstProfileForm" disabled={isProfileSaving} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:shadow-lg transition-all disabled:opacity-50 text-lg shadow-md">{isProfileSaving ? 'Сохранение...' : 'Поехали!'}</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* МОДАЛКА СОЗДАНИЯ */}
+      {/* МОДАЛКА СОЗДАНИЯ СОБЫТИЯ */}
       {isCreateModalOpen && (
-        <div className="fixed inset-0 z-[100] overflow-y-auto bg-gray-900/40 backdrop-blur-md p-4 flex items-center justify-center pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
-          <div className="bg-white rounded-[32px] w-full max-w-lg overflow-hidden flex flex-col max-h-[95vh] shadow-2xl">
+        <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-md flex items-end sm:items-center justify-center pt-[env(safe-area-inset-top)] animate-in fade-in duration-300">
+          <div className="bg-white rounded-t-[32px] sm:rounded-[32px] w-full max-w-lg overflow-hidden flex flex-col h-[90vh] sm:h-auto sm:max-h-[90vh] shadow-2xl animate-in slide-in-from-bottom-5">
             <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center shrink-0">
-              <h3 className="text-xl font-extrabold">Новое событие</h3>
-              <button onClick={() => setIsCreateModalOpen(false)} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors"><X className="w-5 h-5 text-gray-600" /></button>
+              <h3 className="text-2xl font-extrabold text-gray-900">Новое событие</h3>
+              <button onClick={() => setIsCreateModalOpen(false)} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors"><X className="w-6 h-6 text-gray-600" /></button>
             </div>
-            <form id="createEventForm" onSubmit={handleCreateEvent} className="p-6 overflow-y-auto space-y-5">
+            <form id="createEventForm" onSubmit={handleCreateEvent} className="p-6 overflow-y-auto space-y-5 flex-1">
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-2 ml-1">Обложка</label>
-                <div className="relative w-full h-44 bg-gray-50 rounded-3xl flex flex-col items-center justify-center overflow-hidden border-2 border-dashed border-gray-200">{imagePreview ? <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" /> : <div className="text-center text-gray-400"><Camera className="w-8 h-8 mx-auto mb-2 text-purple-300" /><span className="text-sm font-bold">Добавить фото</span></div>}<input type="file" accept="image/*" onChange={handleEventImageChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
+                <div className="relative w-full h-48 bg-gray-50 rounded-[28px] flex flex-col items-center justify-center overflow-hidden border-2 border-dashed border-gray-200 hover:bg-gray-100 transition-colors">{imagePreview ? <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" /> : <div className="text-center text-gray-400"><Camera className="w-10 h-10 mx-auto mb-2 text-purple-300" /><span className="text-sm font-bold">Добавить фото</span></div>}<input type="file" accept="image/*" onChange={handleEventImageChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
               </div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Название *</label><input required type="text" value={newEvent.title} onChange={e => setNewEvent({...newEvent, title: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl outline-none focus:ring-2 focus:ring-purple-500 font-medium" placeholder="Как назовем встречу?" /></div>
-              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Описание</label><textarea value={newEvent.description} onChange={e => setNewEvent({...newEvent, description: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl outline-none focus:ring-2 focus:ring-purple-500 font-medium resize-none" rows="2" placeholder="Кратко о главном..."></textarea></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Название *</label><input required type="text" value={newEvent.title} onChange={e => setNewEvent({...newEvent, title: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Как назовем встречу?" /></div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Описание</label><textarea value={newEvent.description} onChange={e => setNewEvent({...newEvent, description: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium resize-none shadow-inner" rows="3" placeholder="Кратко о главном..."></textarea></div>
               <div className="grid grid-cols-2 gap-4">
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Город *</label><input required type="text" value={newEvent.city} onChange={e => setNewEvent({...newEvent, city: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl outline-none focus:ring-2 focus:ring-purple-500 font-medium" /></div>
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Место *</label><input required type="text" value={newEvent.location} onChange={e => setNewEvent({...newEvent, location: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl outline-none focus:ring-2 focus:ring-purple-500 font-medium" placeholder="Кафе, Парк..." /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Дата *</label><input required type="date" value={newEvent.date} onChange={e => setNewEvent({...newEvent, date: e.target.value})} className="w-full px-4 py-3.5 bg-gray-50 border-none rounded-2xl outline-none focus:ring-2 focus:ring-purple-500 font-medium text-gray-600" /></div>
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Время *</label><input required type="time" value={newEvent.time} onChange={e => setNewEvent({...newEvent, time: e.target.value})} className="w-full px-4 py-3.5 bg-gray-50 border-none rounded-2xl outline-none focus:ring-2 focus:ring-purple-500 font-medium text-gray-600" /></div>
+                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Город *</label><input required type="text" value={newEvent.city} onChange={e => setNewEvent({...newEvent, city: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" /></div>
+                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Место *</label><input required type="text" value={newEvent.location} onChange={e => setNewEvent({...newEvent, location: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Кафе, Парк..." /></div>
               </div>
               <div className="grid grid-cols-2 gap-4">
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Категория</label><select value={newEvent.category} onChange={e => setNewEvent({...newEvent, category: e.target.value})} className="w-full px-4 py-3.5 bg-gray-50 border-none rounded-2xl outline-none focus:ring-2 focus:ring-purple-500 font-medium text-gray-800">{CATEGORIES.filter(c => c !== 'Все').map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div>
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Лимит людей</label><input type="number" value={newEvent.maxAttendees} onChange={e => setNewEvent({...newEvent, maxAttendees: e.target.value})} className="w-full px-5 py-3.5 bg-gray-50 border-none rounded-2xl outline-none focus:ring-2 focus:ring-purple-500 font-medium" placeholder="Без лимита" /></div>
+                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Дата *</label><input required type="date" value={newEvent.date} onChange={e => setNewEvent({...newEvent, date: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-600 shadow-inner" /></div>
+                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Время *</label><input required type="time" value={newEvent.time} onChange={e => setNewEvent({...newEvent, time: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-600 shadow-inner" /></div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Категория</label><select value={newEvent.category} onChange={e => setNewEvent({...newEvent, category: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-800 shadow-inner">{CATEGORIES.filter(c => c !== 'Все').map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div>
+                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Лимит людей</label><input type="number" value={newEvent.maxAttendees} onChange={e => setNewEvent({...newEvent, maxAttendees: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Без лимита" /></div>
               </div>
             </form>
-            <div className="p-5 border-t border-gray-50 bg-white shrink-0">
-              <button type="submit" form="createEventForm" disabled={isUploading} className="w-full bg-gradient-to-r from-orange-500 to-purple-600 text-white font-bold py-4 rounded-2xl shadow-md hover:shadow-lg disabled:opacity-50 transition-all">{isUploading ? 'Создание...' : 'Опубликовать событие'}</button>
+            <div className="p-5 border-t border-gray-50 bg-gray-50/50 shrink-0 pb-[max(env(safe-area-inset-bottom),1rem)]">
+              <button type="submit" form="createEventForm" disabled={isUploading} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-extrabold text-lg py-4 rounded-3xl shadow-md hover:shadow-lg disabled:opacity-50 transition-all">{isUploading ? 'Создание...' : 'Опубликовать событие'}</button>
             </div>
           </div>
         </div>
@@ -552,28 +666,28 @@ export default function App() {
 
       {/* ПОЛНОЭКРАННАЯ КАРТОЧКА СОБЫТИЯ */}
       {selectedEvent && (
-        <div className="fixed inset-0 z-[90] bg-white flex flex-col h-[100dvh] overflow-hidden animate-in slide-in-from-bottom-5 duration-300">
-          <div className="relative h-[35vh] min-h-[250px] shrink-0 bg-gray-200">
+        <div className="fixed inset-0 z-[90] bg-white flex flex-col h-[100dvh] overflow-hidden animate-in slide-in-from-right duration-300">
+          <div className="relative h-[40vh] min-h-[300px] shrink-0 bg-gray-200">
             <img src={selectedEvent.image} className="w-full h-full object-cover" alt="Обложка" />
-            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent"></div>
-            <button onClick={() => { setSelectedEvent(null); setActiveTab('info'); }} className="absolute top-4 left-4 bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-white/40 transition-colors z-10 mt-[env(safe-area-inset-top)]"><ChevronLeft className="w-6 h-6" /></button>
+            <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-black/10"></div>
+            <button onClick={() => { setSelectedEvent(null); setActiveTab('info'); }} className="absolute top-4 left-4 bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-white/40 transition-colors z-10 mt-[env(safe-area-inset-top)] border border-white/30"><ChevronLeft className="w-6 h-6" /></button>
             <div className="absolute bottom-0 inset-x-0 p-6 pt-20"><span className="px-4 py-1.5 bg-white/20 backdrop-blur-md text-white text-xs font-bold rounded-full mb-3 inline-block shadow-sm border border-white/30">{selectedEvent.category}</span><h2 className="text-3xl font-extrabold text-white leading-tight drop-shadow-md">{selectedEvent.title}</h2></div>
           </div>
-          <div className="flex px-6 shrink-0 bg-white border-b border-gray-100 shadow-sm relative z-10 rounded-t-3xl -mt-6">
-            <button onClick={() => setActiveTab('info')} className={`py-5 mr-8 font-extrabold border-b-[3px] transition-colors ${activeTab === 'info' ? 'border-purple-600 text-purple-700' : 'border-transparent text-gray-400'}`}>О событии</button>
-            <button onClick={() => setActiveTab('chat')} className={`py-5 font-extrabold border-b-[3px] flex items-center gap-2 transition-colors ${activeTab === 'chat' ? 'border-orange-500 text-orange-600' : 'border-transparent text-gray-400'}`}><MessageSquare className="w-5 h-5" /> Чат участников</button>
+          <div className="flex px-6 shrink-0 bg-white border-b border-gray-100 shadow-sm relative z-10 rounded-t-[32px] -mt-8">
+            <button onClick={() => setActiveTab('info')} className={`py-6 mr-8 font-extrabold border-b-[3px] transition-colors ${activeTab === 'info' ? 'border-purple-500 text-purple-700' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>О событии</button>
+            <button onClick={() => setActiveTab('chat')} className={`py-6 font-extrabold border-b-[3px] flex items-center gap-2 transition-colors ${activeTab === 'chat' ? 'border-orange-400 text-orange-600' : 'border-transparent text-gray-400 hover:text-gray-600'}`}><MessageSquare className="w-5 h-5" /> Чат участников</button>
           </div>
           <div className="flex-1 overflow-y-auto bg-gray-50/50">
             {activeTab === 'info' ? (
               <div className="p-6 pb-24">
                 <div className="grid grid-cols-1 gap-4 mb-8">
-                  <div className="flex gap-4 items-center bg-white p-4 rounded-3xl shadow-sm border border-gray-50"><div className="bg-purple-50 p-3 rounded-2xl"><Calendar className="w-6 h-6 text-purple-500" /></div><div><p className="font-extrabold text-gray-900 text-lg">{selectedEvent.date}</p><p className="text-sm text-gray-500 font-medium">{selectedEvent.time}</p></div></div>
-                  <div className="flex gap-4 items-center bg-white p-4 rounded-3xl shadow-sm border border-gray-50"><div className="bg-orange-50 p-3 rounded-2xl"><MapPin className="w-6 h-6 text-orange-500" /></div><div><p className="font-extrabold text-gray-900 text-lg">{selectedEvent.city}</p><p className="text-sm text-gray-500 font-medium">{selectedEvent.location}</p></div></div>
-                  <div className="flex gap-4 items-center bg-white p-4 rounded-3xl shadow-sm border border-gray-50 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => handleUserClick(selectedEvent.organizerId)}><div className="bg-blue-50 p-3 rounded-2xl"><Crown className="w-6 h-6 text-blue-500" /></div><div><p className="font-extrabold text-gray-900 text-lg line-clamp-1">{selectedEvent.organizer}</p><p className="text-sm text-gray-500 font-medium">Организатор</p></div></div>
+                  <div className="flex gap-4 items-center bg-white p-5 rounded-[28px] shadow-sm border border-gray-100"><div className="bg-purple-50 p-3 rounded-2xl"><Calendar className="w-7 h-7 text-purple-500" /></div><div><p className="font-extrabold text-gray-900 text-lg">{selectedEvent.date}</p><p className="text-sm text-gray-500 font-medium">{selectedEvent.time}</p></div></div>
+                  <div className="flex gap-4 items-center bg-white p-5 rounded-[28px] shadow-sm border border-gray-100"><div className="bg-orange-50 p-3 rounded-2xl"><MapPin className="w-7 h-7 text-orange-500" /></div><div><p className="font-extrabold text-gray-900 text-lg">{selectedEvent.city}</p><p className="text-sm text-gray-500 font-medium">{selectedEvent.location}</p></div></div>
+                  <div className="flex gap-4 items-center bg-white p-5 rounded-[28px] shadow-sm border border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors" onClick={() => handleUserClick(selectedEvent.organizerId)}><div className="bg-blue-50 p-3 rounded-2xl"><Crown className="w-7 h-7 text-blue-500" /></div><div><p className="font-extrabold text-gray-900 text-lg line-clamp-1">{selectedEvent.organizer}</p><p className="text-sm text-gray-500 font-medium">Организатор</p></div></div>
                 </div>
-                <div className="mb-10 bg-white p-6 rounded-3xl shadow-sm border border-gray-50"><h4 className="text-lg font-extrabold mb-3 text-gray-900">Описание</h4><p className="text-gray-600 whitespace-pre-wrap leading-relaxed">{selectedEvent.description || 'Организатор не оставил описание, но точно будет круто!'}</p></div>
+                <div className="mb-10 bg-white p-6 rounded-[32px] shadow-sm border border-gray-100"><h4 className="text-xl font-extrabold mb-4 text-gray-900">Описание</h4><p className="text-gray-600 whitespace-pre-wrap leading-relaxed text-[15px]">{selectedEvent.description || 'Организатор не оставил описание, но точно будет круто!'}</p></div>
                 <div>
-                  <h4 className="text-lg font-extrabold mb-4 text-gray-900 flex items-center gap-2">Кто идет <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-sm">{selectedEvent.attendeesList?.length}</span></h4>
+                  <h4 className="text-xl font-extrabold mb-5 text-gray-900 flex items-center gap-3">Участники <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-sm">{selectedEvent.attendeesList?.length}</span></h4>
                   <div className="flex flex-wrap gap-3">
                     {selectedEvent.attendeesList?.map(attendee => (
                       <div key={attendee.id} onClick={() => handleUserClick(attendee.id)} className="flex items-center gap-3 bg-white pr-5 pl-2 py-2 rounded-full border border-gray-100 shadow-sm cursor-pointer hover:shadow-md transition-shadow">{attendee.avatar ? <img src={attendee.avatar} className="w-10 h-10 rounded-full object-cover" alt="av" /> : <UserCircle className="w-10 h-10 text-gray-300" />}<span className="text-sm font-bold text-gray-800">{attendee.name}</span>{attendee.id === selectedEvent.organizerId && <span className="text-[10px] uppercase font-extrabold bg-gradient-to-r from-orange-400 to-purple-500 text-white px-2 py-1 rounded-full shadow-sm">Орг</span>}</div>
@@ -584,21 +698,21 @@ export default function App() {
             ) : (
               <div className="flex flex-col h-full bg-white">
                 {!isParticipant ? (
-                  <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-50/50"><div className="w-24 h-24 bg-gradient-to-br from-orange-100 to-purple-100 rounded-full flex items-center justify-center mb-6 shadow-sm"><MessageSquare className="w-10 h-10 text-purple-400" /></div><h3 className="text-2xl font-extrabold mb-3 text-gray-900">Приватный чат</h3><p className="text-gray-500 mb-8 font-medium">Общение доступно только для участников. Жмите кнопку внизу, чтобы присоединиться!</p></div>
+                  <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gray-50/50"><div className="w-24 h-24 bg-gradient-to-br from-orange-100 to-purple-100 rounded-full flex items-center justify-center mb-6 shadow-sm border-4 border-white"><MessageSquare className="w-10 h-10 text-purple-500" /></div><h3 className="text-2xl font-extrabold mb-3 text-gray-900">Приватный чат</h3><p className="text-gray-500 mb-8 font-medium">Общение доступно только для участников. Присоединяйтесь!</p></div>
                 ) : (
-                  <><div className="flex-1 p-5 space-y-6 overflow-y-auto pb-10">{messages.map(msg => (<div key={msg.id} className={`flex flex-col ${msg.userId === user?.uid ? 'items-end' : 'items-start'}`}><div onClick={() => handleUserClick(msg.userId)} className="flex items-center gap-2 mb-1.5 px-1 cursor-pointer">{msg.userId !== user?.uid && msg.userAvatar && <img src={msg.userAvatar} className="w-6 h-6 rounded-full object-cover shadow-sm" alt="av" />}<span className="text-[12px] font-bold text-gray-400 hover:text-purple-500">{msg.userName}</span></div><div className={`px-5 py-3.5 rounded-3xl max-w-[85%] text-[15px] font-medium leading-relaxed shadow-sm ${msg.userId === user?.uid ? 'bg-gradient-to-br from-purple-500 to-purple-600 text-white rounded-br-sm' : 'bg-gray-100 text-gray-800 rounded-bl-sm'}`}>{msg.text}</div></div>))} <div ref={messagesEndRef} /></div><form onSubmit={handleSendMessage} className="p-4 bg-white border-t border-gray-100 flex gap-3 shrink-0 shadow-[0_-10px_40px_rgba(0,0,0,0.03)] pb-[max(env(safe-area-inset-bottom),1rem)]"><input type="text" value={newMessage} onChange={e => setNewMessage(e.target.value)} placeholder="Написать в чат..." className="flex-1 px-6 py-4 bg-gray-50 border-none rounded-full outline-none focus:ring-2 focus:ring-purple-500 font-medium" /><button type="submit" disabled={!newMessage.trim()} className="bg-gradient-to-r from-orange-500 to-purple-600 text-white w-14 h-14 flex items-center justify-center rounded-full disabled:opacity-50 shadow-md hover:shadow-lg transition-all"><Send className="w-5 h-5 ml-1" /></button></form></>
+                  <><div className="flex-1 p-5 space-y-6 overflow-y-auto pb-10">{messages.map(msg => (<div key={msg.id} className={`flex flex-col ${msg.userId === user?.uid ? 'items-end' : 'items-start'}`}><div onClick={() => handleUserClick(msg.userId)} className="flex items-center gap-2 mb-1.5 px-1 cursor-pointer">{msg.userId !== user?.uid && msg.userAvatar && <img src={msg.userAvatar} className="w-6 h-6 rounded-full object-cover shadow-sm" alt="av" />}<span className="text-[12px] font-bold text-gray-400 hover:text-purple-500">{msg.userName}</span></div><div className={`px-5 py-3.5 rounded-3xl max-w-[85%] text-[15px] font-medium leading-relaxed shadow-sm ${msg.userId === user?.uid ? 'bg-gradient-to-br from-purple-500 to-purple-600 text-white rounded-br-sm' : 'bg-gray-100 text-gray-800 rounded-bl-sm'}`}>{msg.text}</div></div>))} <div ref={messagesEndRef} /></div><form onSubmit={handleSendMessage} className="p-4 bg-white border-t border-gray-100 flex gap-3 shrink-0 shadow-[0_-10px_40px_rgba(0,0,0,0.03)] pb-[max(env(safe-area-inset-bottom),1rem)]"><input type="text" value={newMessage} onChange={e => setNewMessage(e.target.value)} placeholder="Написать в чат..." className="flex-1 px-6 py-4 bg-gray-50 border-none rounded-full outline-none focus:ring-2 focus:ring-purple-400 font-medium" /><button type="submit" disabled={!newMessage.trim()} className="bg-gradient-to-r from-orange-400 to-purple-500 text-white w-14 h-14 flex items-center justify-center rounded-full disabled:opacity-50 shadow-md hover:shadow-lg transition-all"><Send className="w-5 h-5 ml-1" /></button></form></>
                 )}
               </div>
             )}
           </div>
           {activeTab === 'info' && (
-            <div className="p-4 sm:p-5 bg-white border-t border-gray-100 flex justify-between items-center shrink-0 shadow-[0_-10px_40px_rgba(0,0,0,0.03)] pb-[max(env(safe-area-inset-bottom),1rem)]">
+            <div className="p-4 sm:p-5 bg-white/90 backdrop-blur-xl border-t border-gray-100 flex justify-between items-center shrink-0 shadow-[0_-20px_40px_rgba(0,0,0,0.05)] pb-[max(env(safe-area-inset-bottom),1rem)]">
               {selectedEvent.organizerId === user?.uid ? (
-                showDeleteConfirm ? (<div className="flex gap-3 w-full"><button onClick={() => handleDeleteEvent(selectedEvent)} className="flex-1 py-4 bg-red-500 text-white font-bold rounded-2xl shadow-sm hover:bg-red-600">Точно удалить</button><button onClick={() => setShowDeleteConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-700 font-bold rounded-2xl hover:bg-gray-200">Отмена</button></div>) : (<button onClick={() => setShowDeleteConfirm(true)} className="w-full py-4 bg-red-50 text-red-500 font-bold rounded-2xl flex items-center justify-center gap-2 hover:bg-red-100 transition-colors"><Trash2 className="w-5 h-5"/> Удалить событие</button>)
+                showDeleteConfirm ? (<div className="flex gap-3 w-full animate-in fade-in"><button onClick={() => handleDeleteEvent(selectedEvent)} className="flex-1 py-4 bg-red-500 text-white font-bold rounded-3xl shadow-sm hover:bg-red-600">Точно удалить</button><button onClick={() => setShowDeleteConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-700 font-bold rounded-3xl hover:bg-gray-200">Отмена</button></div>) : (<button onClick={() => setShowDeleteConfirm(true)} className="w-full py-4 bg-red-50 text-red-500 font-bold rounded-3xl flex items-center justify-center gap-2 hover:bg-red-100 transition-colors"><Trash2 className="w-5 h-5"/> Удалить событие</button>)
               ) : isParticipant ? (
-                <button onClick={() => handleLeaveEvent(selectedEvent)} className="w-full py-4 bg-gray-100 text-gray-600 font-bold rounded-2xl flex items-center justify-center gap-2 hover:bg-gray-200 transition-colors"><CalendarOff className="w-5 h-5"/> Отменить участие</button>
+                <button onClick={() => handleLeaveEvent(selectedEvent)} className="w-full py-4 bg-gray-100 text-gray-600 font-bold rounded-3xl flex items-center justify-center gap-2 hover:bg-gray-200 transition-colors"><CalendarOff className="w-5 h-5"/> Отменить участие</button>
               ) : (
-                <button onClick={() => handleJoinEvent(selectedEvent)} disabled={selectedEvent.maxAttendees && selectedEvent.attendees >= selectedEvent.maxAttendees} className="w-full py-4 bg-gradient-to-r from-orange-500 to-purple-600 text-white font-extrabold text-lg rounded-2xl shadow-lg hover:shadow-xl disabled:opacity-50 transition-all">Присоединиться</button>
+                <button onClick={() => handleJoinEvent(selectedEvent)} disabled={selectedEvent.maxAttendees && selectedEvent.attendees >= selectedEvent.maxAttendees} className="w-full py-4 bg-gradient-to-r from-orange-400 to-purple-500 text-white font-extrabold text-lg rounded-3xl shadow-lg hover:shadow-xl disabled:opacity-50 transition-all">Присоединиться</button>
               )}
             </div>
           )}
@@ -607,34 +721,81 @@ export default function App() {
 
       {/* МОДАЛКА ПРОСМОТРА ЧУЖОГО ПРОФИЛЯ */}
       {viewingUser && (
-         <div className="fixed inset-0 z-[110] bg-gray-900/40 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] animate-in fade-in duration-200">
-           <div className="bg-white rounded-[32px] w-full max-w-sm overflow-hidden flex flex-col shadow-2xl relative">
+         <div className="fixed inset-0 z-[110] bg-gray-900/60 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] animate-in fade-in duration-200">
+           <div className="bg-white rounded-[32px] w-full max-w-sm overflow-hidden flex flex-col shadow-2xl relative animate-in zoom-in-95">
              {isViewingUserLoading ? (
-                <div className="p-10 flex justify-center"><Loader2 className="w-8 h-8 animate-spin text-purple-500" /></div>
+                <div className="p-16 flex justify-center"><Loader2 className="w-8 h-8 animate-spin text-purple-500" /></div>
              ) : (
                <>
                  <div className="absolute top-4 right-4 z-10">
-                   <button onClick={() => setViewingUser(null)} className="p-2 bg-black/5 hover:bg-black/10 rounded-full transition-colors backdrop-blur-sm"><X className="w-5 h-5 text-gray-700" /></button>
+                   <button onClick={() => setViewingUser(null)} className="p-2 bg-black/20 hover:bg-black/30 text-white rounded-full transition-colors backdrop-blur-md border border-white/20"><X className="w-5 h-5" /></button>
                  </div>
-                 <div className="bg-gradient-to-br from-orange-100 to-purple-100 h-32 relative"></div>
-                 <div className="px-6 pb-8 pt-0 relative flex flex-col items-center">
-                    <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center overflow-hidden border-4 border-white shadow-md -mt-12 mb-4">
-                      {viewingUser.avatar ? <img src={viewingUser.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <UserCircle className="w-full h-full text-gray-300" />}
+                 <div className="bg-gradient-to-br from-orange-300 to-purple-400 h-32 relative"></div>
+                 <div className="px-6 pb-6 pt-0 relative flex flex-col items-center">
+                    <div className="w-28 h-28 bg-white rounded-full flex items-center justify-center overflow-hidden border-4 border-white shadow-md -mt-14 mb-4">
+                      {viewingUser.avatar ? <img src={viewingUser.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <UserCircle className="w-full h-full text-gray-300 bg-gray-50" />}
                     </div>
                     <h3 className="text-2xl font-extrabold text-gray-900 text-center">{viewingUser.name}</h3>
-                    {viewingUser.city && <div className="flex items-center gap-1 mt-1 text-gray-500 font-medium"><MapPin className="w-4 h-4"/> {viewingUser.city}</div>}
+                    {viewingUser.city && <div className="flex items-center gap-1.5 mt-2 text-gray-500 font-medium bg-gray-50 px-4 py-1.5 rounded-full border border-gray-100"><MapPin className="w-4 h-4 text-orange-400"/> {viewingUser.city}</div>}
                     
                     {viewingUser.interests && (
-                      <div className="mt-6 w-full bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                      <div className="mt-6 w-full bg-gray-50 p-5 rounded-3xl border border-gray-100">
                         <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">О себе</p>
-                        <p className="text-gray-700 text-sm whitespace-pre-wrap">{viewingUser.interests}</p>
+                        <p className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{viewingUser.interests}</p>
                       </div>
+                    )}
+                    
+                    {/* КНОПКА "НАПИСАТЬ СООБЩЕНИЕ" */}
+                    {user?.uid !== viewingUser.id && (
+                       <button onClick={() => handleStartDirectChat(viewingUser)} className="mt-6 w-full py-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-extrabold rounded-3xl shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2"><MessageCircle className="w-5 h-5"/> Написать сообщение</button>
                     )}
                  </div>
                </>
              )}
            </div>
          </div>
+      )}
+
+      {/* ПОЛНОЭКРАННЫЙ ЛИЧНЫЙ ЧАТ (DIRECT MESSAGE) */}
+      {activeDirectChat && (
+        <div className="fixed inset-0 z-[120] bg-white flex flex-col h-[100dvh] overflow-hidden animate-in slide-in-from-right duration-300">
+           <div className="flex items-center gap-3 px-4 h-16 shrink-0 bg-white border-b border-gray-100 shadow-sm pt-[env(safe-area-inset-top)] pb-2 relative z-10 box-content">
+             <button onClick={() => setActiveDirectChat(null)} className="p-2 -ml-2 text-gray-500 hover:text-gray-800 transition-colors"><ChevronLeft className="w-7 h-7" /></button>
+             <div className="flex items-center gap-3 flex-1 cursor-pointer" onClick={() => handleUserClick(activeDirectChat.partner.id)}>
+               <div className="w-10 h-10 rounded-full overflow-hidden border border-gray-100 shrink-0">
+                 {activeDirectChat.partner.avatar ? <img src={activeDirectChat.partner.avatar} className="w-full h-full object-cover" alt="av" /> : <UserCircle className="w-full h-full text-gray-300" />}
+               </div>
+               <div>
+                 <h3 className="font-extrabold text-gray-900 leading-tight">{activeDirectChat.partner.name}</h3>
+                 <span className="text-[11px] font-bold text-blue-500">Личный чат</span>
+               </div>
+             </div>
+           </div>
+           
+           <div className="flex-1 p-5 space-y-6 overflow-y-auto bg-gray-50/50 pb-10">
+              {directMessages.length === 0 ? (
+                 <div className="flex flex-col items-center justify-center h-full text-center text-gray-400">
+                    <MessageCircle className="w-12 h-12 mb-3 text-gray-300" />
+                    <p className="font-medium">Это начало вашей переписки.</p>
+                    <p className="text-sm">Скажите «Привет!»</p>
+                 </div>
+              ) : (
+                directMessages.map(msg => (
+                  <div key={msg.id} className={`flex flex-col ${msg.userId === user?.uid ? 'items-end' : 'items-start'}`}>
+                    <div className={`px-5 py-3.5 rounded-3xl max-w-[85%] text-[15px] font-medium leading-relaxed shadow-sm ${msg.userId === user?.uid ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'}`}>
+                      {msg.text}
+                    </div>
+                  </div>
+                ))
+              )}
+              <div ref={directMessagesEndRef} />
+           </div>
+
+           <form onSubmit={handleSendDirectMessage} className="p-4 bg-white border-t border-gray-100 flex gap-3 shrink-0 shadow-[0_-10px_40px_rgba(0,0,0,0.03)] pb-[max(env(safe-area-inset-bottom),1rem)]">
+              <input type="text" value={newDirectMessage} onChange={e => setNewDirectMessage(e.target.value)} placeholder="Написать сообщение..." className="flex-1 px-6 py-4 bg-gray-50 border-none rounded-full outline-none focus:ring-2 focus:ring-blue-400 font-medium" />
+              <button type="submit" disabled={!newDirectMessage.trim()} className="bg-gradient-to-r from-blue-500 to-blue-600 text-white w-14 h-14 flex items-center justify-center rounded-full disabled:opacity-50 shadow-md hover:shadow-lg transition-all"><Send className="w-5 h-5 ml-1" /></button>
+           </form>
+        </div>
       )}
 
     </div>
