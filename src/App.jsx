@@ -1,13 +1,14 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle, Bell, MailWarning, RefreshCw } from 'lucide-react';
+import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle, Bell, BellRing, MailWarning, RefreshCw } from 'lucide-react';
 
 // ИМПОРТЫ FIREBASE
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail, sendEmailVerification } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, setDoc, getDoc, query, where } from 'firebase/firestore';
+import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
 // ==========================================
-// 🚨 ВСТАВЬТЕ СВОИ КЛЮЧИ FIREBASE СЮДА
+// 🚨 ВСТАВЬТЕ СВОИ ОСНОВНЫЕ КЛЮЧИ FIREBASE СЮДА
 // ==========================================
 const firebaseConfig = {
   apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
@@ -19,9 +20,20 @@ const firebaseConfig = {
 };
 // ==========================================
 
+// 🚨 ВСТАВЬТЕ СКОПИРОВАННЫЙ VAPID KEY СЮДА
+const VAPID_KEY = "BC-H7FIJGhfkBohlUR8nQPOE4okMpjc0qc84JCWNA4uZjhyOXWUsG0ClNg3v5KRgEefZYFzg3nFCKtSYcXMpWug";
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+
+// Инициализируем систему уведомлений (с защитой от старых браузеров)
+let messaging;
+try {
+  messaging = getMessaging(app);
+} catch (e) {
+  console.log("Push-уведомления не поддерживаются в этом браузере", e);
+}
 
 const CATEGORIES = ['Все', 'Настольные игры', 'Кино', 'Спорт', 'Еда и напитки', 'Искусство', 'Музыка', 'Образование', 'Другое'];
 
@@ -38,14 +50,14 @@ export default function App() {
   const [showPassword, setShowPassword] = useState(false);
   const [isResendingEmail, setIsResendingEmail] = useState(false);
 
-  const [userProfile, setUserProfile] = useState({ name: '', city: '', interests: '', avatar: '' });
+  // Добавили fcmToken в профиль по умолчанию
+  const [userProfile, setUserProfile] = useState({ name: '', city: '', interests: '', avatar: '', fcmToken: '' });
   const [isFirstLogin, setIsFirstLogin] = useState(false);
   const [isProfileSaving, setIsProfileSaving] = useState(false);
 
   const [events, setEvents] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // НАВИГАЦИЯ НИЖНЕГО МЕНЮ: 'all', 'going', 'organized', 'chats', 'profile'
   const [navTab, setNavTab] = useState('all'); 
   
   const [searchQuery, setSearchQuery] = useState('');
@@ -53,7 +65,7 @@ export default function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [filterCity, setFilterCity] = useState('');
   const [filterDate, setFilterDate] = useState('');
-  const [showPastEvents, setShowPastEvents] = useState(false); // ТУМБЛЕР ПРОШЕДШИХ СОБЫТИЙ
+  const [showPastEvents, setShowPastEvents] = useState(false); 
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState(null);
@@ -77,7 +89,17 @@ export default function App() {
   const [directMessages, setDirectMessages] = useState([]);
   const [newDirectMessage, setNewDirectMessage] = useState('');
 
-  // === БЛОКИРОВКА ПРОКРУТКИ ФОНА ===
+  // === СЛУШАТЕЛЬ УВЕДОМЛЕНИЙ ПРИ ОТКРЫТОМ ПРИЛОЖЕНИИ ===
+  useEffect(() => {
+    if (messaging) {
+      const unsubscribe = onMessage(messaging, (payload) => {
+        // Если пришло сообщение, пока приложение открыто, показываем браузерный alert (позже можно заменить на красивый toast)
+        alert(`Новое уведомление: ${payload.notification?.title}\n${payload.notification?.body}`);
+      });
+      return () => unsubscribe();
+    }
+  }, []);
+
   useEffect(() => {
     if (isFirstLogin || isCreateModalOpen || selectedEvent || viewingUser || activeDirectChat || (user && !emailVerified)) {
       document.body.style.overflow = 'hidden';
@@ -113,8 +135,6 @@ export default function App() {
       setUser(currentUser);
       if (currentUser) {
         setEmailVerified(currentUser.emailVerified);
-        
-        // Загружаем профиль только если почта подтверждена (чтобы не тратить запросы к БД)
         if (currentUser.emailVerified) {
           const docRef = doc(db, "users", currentUser.uid);
           const docSnap = await getDoc(docRef);
@@ -127,7 +147,7 @@ export default function App() {
           }
         }
       } else {
-        setUserProfile({ name: '', city: '', interests: '', avatar: '' });
+        setUserProfile({ name: '', city: '', interests: '', avatar: '', fcmToken: '' });
         setEmailVerified(false);
       }
       setIsAuthLoading(false);
@@ -143,7 +163,6 @@ export default function App() {
         await signInWithEmailAndPassword(auth, email, password);
       } else {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        // СРАЗУ ОТПРАВЛЯЕМ ПИСЬМО ПРИ РЕГИСТРАЦИИ
         await sendEmailVerification(userCredential.user);
       }
     } catch (error) {
@@ -166,13 +185,11 @@ export default function App() {
     }
   };
 
-  // ФУНКЦИИ ДЛЯ ПОДТВЕРЖДЕНИЯ ПОЧТЫ
   const checkEmailVerification = async () => {
     if (user) {
-      await user.reload(); // Запрашиваем свежие данные у Firebase
+      await user.reload(); 
       if (user.emailVerified) {
         setEmailVerified(true);
-        // После подтверждения пытаемся загрузить профиль
         const docRef = doc(db, "users", user.uid);
         const docSnap = await getDoc(docRef);
         if (docSnap.exists()) {
@@ -212,6 +229,34 @@ export default function App() {
       setIsFirstLogin(false);
     } catch (error) { alert("Ошибка сохранения: " + error.message); } 
     finally { setIsProfileSaving(false); }
+  };
+
+  // === ЗАПРОС РАЗРЕШЕНИЯ НА УВЕДОМЛЕНИЯ ===
+  const requestNotificationPermission = async () => {
+    if (!messaging || !user) {
+      alert("Push-уведомления не поддерживаются в этом браузере или вы не авторизованы.");
+      return;
+    }
+    
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') {
+        const token = await getToken(messaging, { vapidKey: VAPID_KEY });
+        if (token) {
+          // Сохраняем токен в профиль пользователя в Firebase
+          await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+          setUserProfile(prev => ({ ...prev, fcmToken: token }));
+          alert("Отлично! Вы будете получать уведомления.");
+        } else {
+          alert("Не удалось получить токен. Попробуйте позже.");
+        }
+      } else {
+        alert("Вы запретили присылать уведомления. Включить их можно в настройках браузера/телефона.");
+      }
+    } catch (error) {
+      console.error("Ошибка при настройке уведомлений:", error);
+      alert("Произошла ошибка при настройке уведомлений.");
+    }
   };
 
   const handleAvatarChange = async (e) => {
@@ -295,11 +340,30 @@ export default function App() {
     e.preventDefault();
     if (!newDirectMessage.trim() || !user || !activeDirectChat) return;
     try {
+      const messageText = newDirectMessage.trim();
       const messagesRef = collection(db, 'direct_chats', activeDirectChat.id, 'messages');
       const now = new Date().toISOString();
-      await addDoc(messagesRef, { text: newDirectMessage.trim(), userId: user.uid, createdAt: now });
+      await addDoc(messagesRef, { text: messageText, userId: user.uid, createdAt: now });
       await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { updatedAt: now });
       setNewDirectMessage('');
+
+      // === ОТПРАВКА СИГНАЛА НА СЕРВЕР VERCEL ДЛЯ PUSH-УВЕДОМЛЕНИЯ ===
+      const partnerId = activeDirectChat.partner.id;
+      const partnerDoc = await getDoc(doc(db, 'users', partnerId));
+      
+      // Если у собеседника есть токен телефона в профиле, дёргаем наш API
+      if (partnerDoc.exists() && partnerDoc.data().fcmToken) {
+         fetch('/api/push', {
+           method: 'POST',
+           headers: { 'Content-Type': 'application/json' },
+           body: JSON.stringify({
+             token: partnerDoc.data().fcmToken,
+             title: userProfile.name,
+             body: messageText.length > 50 ? messageText.substring(0, 47) + '...' : messageText
+           })
+         }).catch(err => console.error('Ошибка вызова API Vercel:', err));
+      }
+
     } catch (error) { alert("Ошибка отправки: " + error.message); }
   };
 
@@ -337,7 +401,6 @@ export default function App() {
     return () => unsubscribe();
   }, [user, emailVerified]);
 
-  // ФУНКЦИЯ ПРОВЕРКИ СТАТУСА (ПРОШЛО ИЛИ НЕТ)
   const isEventPast = (dateStr, timeStr) => {
     if (!dateStr || !timeStr) return false;
     const eventDateTime = new Date(`${dateStr}T${timeStr}`);
@@ -346,11 +409,9 @@ export default function App() {
 
   const filteredEvents = useMemo(() => {
     return events.filter(event => {
-      // 1. Проверка на прошедшие
       const isPast = isEventPast(event.date, event.time);
       if (isPast && !showPastEvents) return false;
 
-      // 2. Вкладки навигации
       if (navTab === 'going') {
         const isParticipant = event.attendeesList?.some(a => a.id === user?.uid);
         const isOrganizer = event.organizerId === user?.uid;
@@ -361,7 +422,6 @@ export default function App() {
         if (!isOrganizer) return false;
       }
       
-      // 3. Поиск и фильтры
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
         if (!(event.title?.toLowerCase().includes(query) || event.description?.toLowerCase().includes(query))) return false;
@@ -450,7 +510,7 @@ export default function App() {
     return <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex items-center justify-center"><Loader2 className="w-10 h-10 animate-spin text-orange-500" /></div>;
   }
 
-  // 1. ЭКРАН ВХОДА И РЕГИСТРАЦИИ
+  // 1. ЭКРАН ВХОДА
   if (!user) {
     return (
       <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex flex-col items-center justify-center p-4">
@@ -480,7 +540,7 @@ export default function App() {
     );
   }
 
-  // 2. ЭКРАН ВЕРИФИКАЦИИ ПОЧТЫ (Если вошел, но не подтвердил)
+  // 2. ЭКРАН ВЕРИФИКАЦИИ ПОЧТЫ
   if (user && !emailVerified) {
     return (
       <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex flex-col items-center justify-center p-4">
@@ -523,10 +583,10 @@ export default function App() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between pb-2 mt-2">
             <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-orange-500 to-purple-600 tracking-tight">MeetPoint</h1>
             <div className="flex items-center gap-3">
-              <button className="relative p-2 rounded-full bg-white/50 text-gray-600 hover:bg-white hover:text-purple-500 transition-all shadow-sm">
-                <Bell className="w-5 h-5" />
-                {/* Индикатор непрочитанных (заглушка для будущего бэкенда) */}
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
+              {/* КНОПКА ЗАПРОСА УВЕДОМЛЕНИЙ */}
+              <button onClick={requestNotificationPermission} className={`relative p-2 rounded-full transition-all shadow-sm ${userProfile.fcmToken ? 'bg-purple-100 text-purple-600' : 'bg-white/50 text-gray-600 hover:bg-white'}`} title="Включить уведомления">
+                {userProfile.fcmToken ? <BellRing className="w-5 h-5" /> : <Bell className="w-5 h-5" />}
+                {!userProfile.fcmToken && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>}
               </button>
               <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center gap-2 bg-gradient-to-r from-orange-400 to-purple-500 text-white px-5 py-2.5 rounded-full text-sm font-bold shadow-md hover:shadow-lg transition-all active:scale-95">
                 <Plus className="w-4 h-4" /><span className="hidden sm:inline">Создать</span>
@@ -725,7 +785,7 @@ export default function App() {
             </div>
             <form id="firstProfileForm" onSubmit={handleSaveProfile} className="p-6 overflow-y-auto space-y-5">
               <div className="flex flex-col items-center mb-2">
-                <div className="relative w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
+                <div className="relative w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
                 <span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50 px-4 py-1.5 rounded-full">Добавить фото</span>
               </div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Имя и Фамилия *</label><input required type="text" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner" placeholder="Как вас зовут?" /></div>
