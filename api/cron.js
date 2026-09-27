@@ -1,13 +1,12 @@
-const admin = require('firebase-admin');
+import admin from 'firebase-admin';
 
 // Глобальная переменная для отлова ошибок инициализации
 let initError = null;
 
 if (!admin.apps.length) {
   try {
-    // Безопасная проверка: если ключей вообще нет, падаем с понятной ошибкой
     if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
-      throw new Error("Missing Firebase Environment Variables in Vercel.");
+      throw new Error("Отсутствуют переменные окружения Firebase в Vercel.");
     }
 
     const rawKey = process.env.FIREBASE_PRIVATE_KEY;
@@ -23,13 +22,12 @@ if (!admin.apps.length) {
     });
   } catch (error) {
     console.error('CRITICAL: Ошибка инициализации Firebase Admin:', error);
-    // Сохраняем ошибку, чтобы показать её в запросе, а не падать с 503
     initError = error.message; 
   }
 }
 
-// Эта функция будет вызываться роботом
-module.exports = async (req, res) => {
+// Современный экспорт функции
+export default async function handler(req, res) {
   // 1. Проверяем, не сломалась ли инициализация на старте
   if (initError) {
     return res.status(500).json({ 
@@ -61,7 +59,6 @@ module.exports = async (req, res) => {
 
     eventsSnapshot.forEach(docSnap => {
         const event = docSnap.data();
-        // ВАЖНО: обрабатываем ситуацию, когда время не задано
         if (!event.time) return;
 
         const eventDateTime = new Date(`${event.date}T${event.time}`);
@@ -97,7 +94,6 @@ module.exports = async (req, res) => {
 
   } catch (error) {
     console.error('Ошибка в логике планировщика:', error);
-    // Возвращаем понятную 500 ошибку, а не падаем жестко
     return res.status(500).json({ error: "Внутренняя ошибка сервера", details: error.message });
   }
-};
+}

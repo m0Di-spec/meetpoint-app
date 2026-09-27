@@ -1,26 +1,32 @@
-const admin = require('firebase-admin');
+import admin from 'firebase-admin';
 
 // Инициализация Firebase Admin с использованием скрытых переменных окружения Vercel
 if (!admin.apps.length) {
   try {
+    if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
+      throw new Error("Отсутствуют переменные окружения Firebase в Vercel.");
+    }
+
+    const rawKey = process.env.FIREBASE_PRIVATE_KEY;
+    const formattedKey = rawKey.replace(/\\n/g, '\n');
+
     admin.initializeApp({
       credential: admin.credential.cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        // Заменяем экранированные переносы строк на реальные (требование ключей Google)
-        privateKey: process.env.FIREBASE_PRIVATE_KEY ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') : undefined,
+        privateKey: formattedKey,
       }),
     });
   } catch (error) {
-    console.error('Ошибка инициализации Firebase Admin:', error.stack);
+    console.error('Ошибка инициализации Firebase Admin в push.js:', error);
   }
 }
 
-// Эта функция запускается, когда наше приложение обращается к /api/push
-module.exports = async (req, res) => {
+// Современный экспорт функции для Vercel Serverless
+export default async function handler(req, res) {
   // Разрешаем только POST-запросы
   if (req.method !== 'POST') {
-    return res.status(405).send('Метод не разрешен');
+    return res.status(405).send('Метод не разрешен. Используйте POST.');
   }
 
   const { token, title, body, data } = req.body;
@@ -35,14 +41,13 @@ module.exports = async (req, res) => {
       token: token
     };
     
-    // Если есть дополнительные скрытые данные (например, ID чата), добавляем их
     if (data) payload.data = data;
 
     // Отправляем Push-уведомление через серверы Google
     const response = await admin.messaging().send(payload);
-    res.status(200).json({ success: true, messageId: response });
+    return res.status(200).json({ success: true, messageId: response });
   } catch (error) {
     console.error('Ошибка отправки уведомления:', error);
-    res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: error.message });
   }
-};
+}
