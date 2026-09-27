@@ -1,20 +1,20 @@
-import admin from 'firebase-admin';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import { getMessaging } from 'firebase-admin/messaging';
 
 // Глобальная переменная для отлова ошибок инициализации
 let initError = null;
 
-if (!admin.apps.length) {
+if (!getApps().length) {
   try {
     if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
       throw new Error("Отсутствуют переменные окружения Firebase в Vercel.");
     }
 
-    const rawKey = process.env.FIREBASE_PRIVATE_KEY;
-    // Осторожно парсим ключ, обрабатывая двойные слэши, если Vercel их добавил
-    const formattedKey = rawKey.replace(/\\n/g, '\n');
+    const formattedKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n');
 
-    admin.initializeApp({
-      credential: admin.credential.cert({
+    initializeApp({
+      credential: cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
         privateKey: formattedKey,
@@ -37,7 +37,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const db = admin.firestore();
+    const db = getFirestore();
     const now = new Date();
     
     // Ищем события, которые начнутся через 50-65 минут
@@ -77,7 +77,7 @@ export default async function handler(req, res) {
                              },
                              token: userDoc.data().fcmToken
                          };
-                         promises.push(admin.messaging().send(payload));
+                         promises.push(getMessaging().send(payload));
                          notificationsSent++;
                      }
                  });
