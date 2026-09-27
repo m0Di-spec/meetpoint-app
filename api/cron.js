@@ -1,25 +1,47 @@
 const admin = require('firebase-admin');
 
+// Глобальная переменная для отлова ошибок инициализации
+let initError = null;
+
 if (!admin.apps.length) {
   try {
+    // Безопасная проверка: если ключей вообще нет, падаем с понятной ошибкой
+    if (!process.env.FIREBASE_PROJECT_ID || !process.env.FIREBASE_CLIENT_EMAIL || !process.env.FIREBASE_PRIVATE_KEY) {
+      throw new Error("Missing Firebase Environment Variables in Vercel.");
+    }
+
+    const rawKey = process.env.FIREBASE_PRIVATE_KEY;
+    // Осторожно парсим ключ, обрабатывая двойные слэши, если Vercel их добавил
+    const formattedKey = rawKey.replace(/\\n/g, '\n');
+
     admin.initializeApp({
       credential: admin.credential.cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') : undefined,
+        privateKey: formattedKey,
       }),
     });
   } catch (error) {
-    console.error('Ошибка инициализации Firebase Admin:', error.stack);
+    console.error('CRITICAL: Ошибка инициализации Firebase Admin:', error);
+    // Сохраняем ошибку, чтобы показать её в запросе, а не падать с 503
+    initError = error.message; 
   }
 }
 
-const db = admin.firestore();
-
-// Эта функция будет вызываться бесплатным роботом каждые 15 минут
+// Эта функция будет вызываться роботом
 module.exports = async (req, res) => {
+  // 1. Проверяем, не сломалась ли инициализация на старте
+  if (initError) {
+    return res.status(500).json({ 
+      error: "Инициализация Firebase Admin провалилась. Проверьте ключи в Vercel.", 
+      details: initError 
+    });
+  }
+
   try {
+    const db = admin.firestore();
     const now = new Date();
+    
     // Ищем события, которые начнутся через 50-65 минут
     const oneHourFromNow = new Date(now.getTime() + 60 * 60 * 1000);
     const timeLowerBound = new Date(oneHourFromNow.getTime() - 15 * 60 * 1000); // 45 мин от сейчас
@@ -31,13 +53,17 @@ module.exports = async (req, res) => {
     const eventsSnapshot = await db.collection('events').where('date', '==', todayStr).get();
     
     if (eventsSnapshot.empty) {
-        return res.status(200).send('Нет событий на сегодня.');
+        return res.status(200).json({ success: true, message: 'Нет событий на сегодня.' });
     }
 
     const promises = [];
+    let notificationsSent = 0;
 
     eventsSnapshot.forEach(docSnap => {
         const event = docSnap.data();
+        // ВАЖНО: обрабатываем ситуацию, когда время не задано
+        if (!event.time) return;
+
         const eventDateTime = new Date(`${event.date}T${event.time}`);
 
         // Если событие начинается примерно через час
@@ -55,6 +81,7 @@ module.exports = async (req, res) => {
                              token: userDoc.data().fcmToken
                          };
                          promises.push(admin.messaging().send(payload));
+                         notificationsSent++;
                      }
                  });
             }
@@ -62,10 +89,15 @@ module.exports = async (req, res) => {
     });
 
     await Promise.all(promises);
-    res.status(200).json({ success: true, message: 'Рассылка завершена' });
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Рассылка завершена',
+      sentCount: notificationsSent
+    });
 
   } catch (error) {
-    console.error('Ошибка в планировщике:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Ошибка в логике планировщика:', error);
+    // Возвращаем понятную 500 ошибку, а не падаем жестко
+    return res.status(500).json({ error: "Внутренняя ошибка сервера", details: error.message });
   }
 };
