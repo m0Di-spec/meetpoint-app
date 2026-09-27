@@ -1,6 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle, Bell, BellRing, MailWarning, RefreshCw } from 'lucide-react';
 
+// ИМПОРТЫ CAPACITOR (ДЛЯ ANDROID)
+import { Capacitor } from '@capacitor/core';
+import { PushNotifications } from '@capacitor/push-notifications';
+
 // ИМПОРТЫ FIREBASE
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail, sendEmailVerification } from 'firebase/auth';
@@ -27,12 +31,15 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Инициализируем систему уведомлений (с защитой от старых браузеров)
+// Инициализируем систему веб-уведомлений
 let messaging;
 try {
-  messaging = getMessaging(app);
+  // Инициализируем только если это НЕ нативное Android приложение
+  if (!Capacitor.isNativePlatform()) {
+    messaging = getMessaging(app);
+  }
 } catch (e) {
-  console.log("Push-уведомления не поддерживаются в этом браузере", e);
+  console.log("Push-уведомления (Web) не поддерживаются.", e);
 }
 
 const CATEGORIES = ['Все', 'Настольные игры', 'Кино', 'Спорт', 'Еда и напитки', 'Искусство', 'Музыка', 'Образование', 'Другое'];
@@ -50,7 +57,6 @@ export default function App() {
   const [showPassword, setShowPassword] = useState(false);
   const [isResendingEmail, setIsResendingEmail] = useState(false);
 
-  // Добавили fcmToken в профиль по умолчанию
   const [userProfile, setUserProfile] = useState({ name: '', city: '', interests: '', avatar: '', fcmToken: '' });
   const [isFirstLogin, setIsFirstLogin] = useState(false);
   const [isProfileSaving, setIsProfileSaving] = useState(false);
@@ -89,12 +95,40 @@ export default function App() {
   const [directMessages, setDirectMessages] = useState([]);
   const [newDirectMessage, setNewDirectMessage] = useState('');
 
-  // === СЛУШАТЕЛЬ УВЕДОМЛЕНИЙ ПРИ ОТКРЫТОМ ПРИЛОЖЕНИИ ===
+  // === НАСТРОЙКА НАТИВНЫХ УВЕДОМЛЕНИЙ (ANDROID) ===
   useEffect(() => {
-    if (messaging) {
+    if (Capacitor.isNativePlatform()) {
+      // 1. Слушаем успешную выдачу токена от Android
+      PushNotifications.addListener('registration', async (token) => {
+        if (user) {
+          try {
+            await updateDoc(doc(db, 'users', user.uid), { fcmToken: token.value });
+            setUserProfile(prev => ({ ...prev, fcmToken: token.value }));
+            alert("Уведомления успешно подключены!");
+          } catch (e) {
+            console.error("Ошибка сохранения токена", e);
+          }
+        }
+      });
+
+      // 2. Слушаем ошибки
+      PushNotifications.addListener('registrationError', (error) => {
+        alert("Ошибка настройки Android Push: " + JSON.stringify(error));
+      });
+
+      // 3. Слушаем входящие сообщения на Android
+      PushNotifications.addListener('pushNotificationReceived', (notification) => {
+        console.log('Входящее Android уведомление: ', notification);
+      });
+    }
+  }, [user]);
+
+  // === СЛУШАТЕЛЬ ВЕБ-УВЕДОМЛЕНИЙ ===
+  useEffect(() => {
+    if (messaging && !Capacitor.isNativePlatform()) {
       const unsubscribe = onMessage(messaging, (payload) => {
-        // Если пришло сообщение, пока приложение открыто, показываем браузерный alert (позже можно заменить на красивый toast)
-        alert(`Новое уведомление: ${payload.notification?.title}\n${payload.notification?.body}`);
+        console.log('Получено Web-уведомление:', payload);
+        alert(`Уведомление: ${payload.notification?.title}\n${payload.notification?.body}`);
       });
       return () => unsubscribe();
     }
@@ -231,31 +265,51 @@ export default function App() {
     finally { setIsProfileSaving(false); }
   };
 
-  // === ЗАПРОС РАЗРЕШЕНИЯ НА УВЕДОМЛЕНИЯ ===
+  // === 🔔 УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ ===
   const requestNotificationPermission = async () => {
-    if (!messaging || !user) {
-      alert("Push-уведомления не поддерживаются в этом браузере или вы не авторизованы.");
+    if (!user) {
+      alert("Авторизуйтесь, чтобы получать уведомления.");
       return;
     }
     
     try {
-      const permission = await Notification.requestPermission();
-      if (permission === 'granted') {
-        const token = await getToken(messaging, { vapidKey: VAPID_KEY });
-        if (token) {
-          // Сохраняем токен в профиль пользователя в Firebase
-          await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
-          setUserProfile(prev => ({ ...prev, fcmToken: token }));
-          alert("Отлично! Вы будете получать уведомления.");
-        } else {
-          alert("Не удалось получить токен. Попробуйте позже.");
+      if (Capacitor.isNativePlatform()) {
+        // --- 1. ЛОГИКА ДЛЯ ANDROID (APK) ---
+        let permStatus = await PushNotifications.checkPermissions();
+        if (permStatus.receive === 'prompt') {
+          permStatus = await PushNotifications.requestPermissions();
         }
+        if (permStatus.receive !== 'granted') {
+          return alert("Вы запретили уведомления в настройках телефона.");
+        }
+        // Если разрешил - регистрируем устройство (это вызовет слушатель в useEffect сверху)
+        await PushNotifications.register();
+        
       } else {
-        alert("Вы запретили присылать уведомления. Включить их можно в настройках браузера/телефона.");
+        // --- 2. ЛОГИКА ДЛЯ WEB (Браузер / PWA) ---
+        if (!messaging) {
+          alert("Push-уведомления не поддерживаются в этом браузере.");
+          return;
+        }
+        
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+          // Запрашиваем токен
+          const token = await getToken(messaging, { vapidKey: VAPID_KEY });
+          if (token) {
+            await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+            setUserProfile(prev => ({ ...prev, fcmToken: token }));
+            alert("Отлично! Вы будете получать веб-уведомления.");
+          } else {
+            alert("Не удалось получить токен. Проверьте настройки.");
+          }
+        } else {
+          alert("Вы запретили присылать уведомления.");
+        }
       }
     } catch (error) {
       console.error("Ошибка при настройке уведомлений:", error);
-      alert("Произошла ошибка при настройке уведомлений.");
+      alert(`Ошибка: ${error.message}`);
     }
   };
 
@@ -347,11 +401,9 @@ export default function App() {
       await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { updatedAt: now });
       setNewDirectMessage('');
 
-      // === ОТПРАВКА СИГНАЛА НА СЕРВЕР VERCEL ДЛЯ PUSH-УВЕДОМЛЕНИЯ ===
       const partnerId = activeDirectChat.partner.id;
       const partnerDoc = await getDoc(doc(db, 'users', partnerId));
       
-      // Если у собеседника есть токен телефона в профиле, дёргаем наш API
       if (partnerDoc.exists() && partnerDoc.data().fcmToken) {
          fetch('/api/push', {
            method: 'POST',
