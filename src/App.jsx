@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle } from 'lucide-react';
+import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle, Bell, MailWarning, RefreshCw } from 'lucide-react';
 
 // ИМПОРТЫ FIREBASE
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail, sendEmailVerification } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, setDoc, getDoc, query, where } from 'firebase/firestore';
 
 // ==========================================
@@ -28,6 +28,7 @@ const CATEGORIES = ['Все', 'Настольные игры', 'Кино', 'Сп
 export default function App() {
   const [user, setUser] = useState(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [emailVerified, setEmailVerified] = useState(false);
   
   const [authMode, setAuthMode] = useState('login'); 
   const [email, setEmail] = useState('');
@@ -35,6 +36,7 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authMessage, setAuthMessage] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [isResendingEmail, setIsResendingEmail] = useState(false);
 
   const [userProfile, setUserProfile] = useState({ name: '', city: '', interests: '', avatar: '' });
   const [isFirstLogin, setIsFirstLogin] = useState(false);
@@ -51,6 +53,7 @@ export default function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [filterCity, setFilterCity] = useState('');
   const [filterDate, setFilterDate] = useState('');
+  const [showPastEvents, setShowPastEvents] = useState(false); // ТУМБЛЕР ПРОШЕДШИХ СОБЫТИЙ
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState(null);
@@ -66,11 +69,9 @@ export default function App() {
   const [imagePreview, setImagePreview] = useState('');
   const [isUploading, setIsUploading] = useState(false);
 
-  // ПРОСМОТР ЧУЖОГО ПРОФИЛЯ
   const [viewingUser, setViewingUser] = useState(null);
   const [isViewingUserLoading, setIsViewingUserLoading] = useState(false);
 
-  // ЛИЧНЫЕ СООБЩЕНИЯ (DIRECT MESSAGES)
   const [userChats, setUserChats] = useState([]);
   const [activeDirectChat, setActiveDirectChat] = useState(null);
   const [directMessages, setDirectMessages] = useState([]);
@@ -78,13 +79,13 @@ export default function App() {
 
   // === БЛОКИРОВКА ПРОКРУТКИ ФОНА ===
   useEffect(() => {
-    if (isFirstLogin || isCreateModalOpen || selectedEvent || viewingUser || activeDirectChat) {
+    if (isFirstLogin || isCreateModalOpen || selectedEvent || viewingUser || activeDirectChat || (user && !emailVerified)) {
       document.body.style.overflow = 'hidden';
     } else {
       document.body.style.overflow = 'unset';
     }
     return () => { document.body.style.overflow = 'unset'; };
-  }, [isFirstLogin, isCreateModalOpen, selectedEvent, viewingUser, activeDirectChat]);
+  }, [isFirstLogin, isCreateModalOpen, selectedEvent, viewingUser, activeDirectChat, user, emailVerified]);
 
   const compressImage = (file, isAvatar = false) => {
     return new Promise((resolve) => {
@@ -111,17 +112,23 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
-        const docRef = doc(db, "users", currentUser.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          setUserProfile(docSnap.data());
-          if (docSnap.data().city) setNewEvent(prev => ({...prev, city: docSnap.data().city}));
-          setIsFirstLogin(false);
-        } else {
-          setIsFirstLogin(true);
+        setEmailVerified(currentUser.emailVerified);
+        
+        // Загружаем профиль только если почта подтверждена (чтобы не тратить запросы к БД)
+        if (currentUser.emailVerified) {
+          const docRef = doc(db, "users", currentUser.uid);
+          const docSnap = await getDoc(docRef);
+          if (docSnap.exists()) {
+            setUserProfile(docSnap.data());
+            if (docSnap.data().city) setNewEvent(prev => ({...prev, city: docSnap.data().city}));
+            setIsFirstLogin(false);
+          } else {
+            setIsFirstLogin(true);
+          }
         }
       } else {
         setUserProfile({ name: '', city: '', interests: '', avatar: '' });
+        setEmailVerified(false);
       }
       setIsAuthLoading(false);
     });
@@ -132,8 +139,13 @@ export default function App() {
     e.preventDefault();
     setAuthError(''); setAuthMessage('');
     try {
-      if (authMode === 'login') await signInWithEmailAndPassword(auth, email, password);
-      else await createUserWithEmailAndPassword(auth, email, password);
+      if (authMode === 'login') {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        // СРАЗУ ОТПРАВЛЯЕМ ПИСЬМО ПРИ РЕГИСТРАЦИИ
+        await sendEmailVerification(userCredential.user);
+      }
     } catch (error) {
       if (error.code === 'auth/email-already-in-use') setAuthError('Эта почта уже занята');
       else if (error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') setAuthError('Неверная почта или пароль');
@@ -144,13 +156,48 @@ export default function App() {
 
   const handleResetPassword = async () => {
     setAuthError(''); setAuthMessage('');
-    if (!email) { setAuthError('Введите почту (Email) для сброса.'); return; }
+    if (!email) { setAuthError('Введите почту для сброса.'); return; }
     try {
       await sendPasswordResetEmail(auth, email);
       setAuthMessage('Письмо отправлено! Проверьте почту.');
     } catch (error) {
       if (error.code === 'auth/user-not-found') setAuthError('Пользователь не найден.');
       else setAuthError(`Ошибка: ${error.message}`);
+    }
+  };
+
+  // ФУНКЦИИ ДЛЯ ПОДТВЕРЖДЕНИЯ ПОЧТЫ
+  const checkEmailVerification = async () => {
+    if (user) {
+      await user.reload(); // Запрашиваем свежие данные у Firebase
+      if (user.emailVerified) {
+        setEmailVerified(true);
+        // После подтверждения пытаемся загрузить профиль
+        const docRef = doc(db, "users", user.uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) {
+          setUserProfile(docSnap.data());
+          setIsFirstLogin(false);
+        } else {
+          setIsFirstLogin(true);
+        }
+      } else {
+        alert("Почта еще не подтверждена. Проверьте папку Спам.");
+      }
+    }
+  };
+
+  const resendVerificationEmail = async () => {
+    if (user && !isResendingEmail) {
+      setIsResendingEmail(true);
+      try {
+        await sendEmailVerification(user);
+        alert("Письмо успешно отправлено повторно!");
+      } catch (error) {
+        if (error.code === 'auth/too-many-requests') alert("Слишком много попыток. Подождите немного.");
+        else alert("Ошибка отправки: " + error.message);
+      }
+      setIsResendingEmail(false);
     }
   };
 
@@ -174,7 +221,6 @@ export default function App() {
     }
   };
 
-  // Клик по пользователю
   const handleUserClick = async (clickedUserId) => {
     if (!clickedUserId) return;
     if (clickedUserId === user?.uid) {
@@ -187,7 +233,7 @@ export default function App() {
       const docRef = doc(db, 'users', clickedUserId);
       const docSnap = await getDoc(docRef);
       if (docSnap.exists()) {
-        setViewingUser({ ...docSnap.data(), id: clickedUserId }); // Сохраняем ID для создания чата
+        setViewingUser({ ...docSnap.data(), id: clickedUserId });
       } else {
         alert("Пользователь не найден");
       }
@@ -195,31 +241,24 @@ export default function App() {
     finally { setIsViewingUserLoading(false); }
   };
 
-  // ================= ЛИЧНЫЕ СООБЩЕНИЯ (ЛОГИКА) =================
-  // 1. Загрузка списка диалогов
   useEffect(() => {
-    if (!user) return;
+    if (!user || !emailVerified) return;
     const q = query(collection(db, 'direct_chats'), where('participants', 'array-contains', user.uid));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const chats = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // Сортируем локально по дате обновления, чтобы не заставлять создавать индекс в Firebase
       chats.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
       setUserChats(chats);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, emailVerified]);
 
-  // 2. Создание или открытие чата с пользователем
   const handleStartDirectChat = async (partner) => {
-    if (!user || !partner) return;
-    // Ищем, есть ли уже чат с этим человеком
+    if (!user || !partner || !emailVerified) return;
     const existingChat = userChats.find(chat => chat.participants.includes(partner.id));
-    
     if (existingChat) {
       setViewingUser(null);
       setActiveDirectChat({ id: existingChat.id, partner });
     } else {
-      // Создаем новый чат
       try {
         const chatData = {
           participants: [user.uid, partner.id],
@@ -238,7 +277,6 @@ export default function App() {
     }
   };
 
-  // 3. Загрузка сообщений внутри активного личного чата
   useEffect(() => {
     if (!user || !activeDirectChat) { setDirectMessages([]); return; }
     const messagesRef = collection(db, 'direct_chats', activeDirectChat.id, 'messages');
@@ -250,7 +288,6 @@ export default function App() {
     return () => unsubscribe();
   }, [user, activeDirectChat]);
 
-  // Скролл вниз
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { directMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [directMessages]);
 
@@ -261,14 +298,11 @@ export default function App() {
       const messagesRef = collection(db, 'direct_chats', activeDirectChat.id, 'messages');
       const now = new Date().toISOString();
       await addDoc(messagesRef, { text: newDirectMessage.trim(), userId: user.uid, createdAt: now });
-      // Обновляем время последнего сообщения в самом чате
       await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { updatedAt: now });
       setNewDirectMessage('');
     } catch (error) { alert("Ошибка отправки: " + error.message); }
   };
-  // ==============================================================
 
-  // События (Глобальные)
   useEffect(() => {
     if (!user || !selectedEvent) { setMessages([]); return; }
     const messagesRef = collection(db, 'events', selectedEvent.docId, 'messages');
@@ -291,7 +325,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !emailVerified) return;
     const eventsRef = collection(db, 'events');
     setIsLoading(true);
     const unsubscribe = onSnapshot(eventsRef, (snapshot) => {
@@ -301,10 +335,22 @@ export default function App() {
       setIsLoading(false);
     });
     return () => unsubscribe();
-  }, [user]);
+  }, [user, emailVerified]);
+
+  // ФУНКЦИЯ ПРОВЕРКИ СТАТУСА (ПРОШЛО ИЛИ НЕТ)
+  const isEventPast = (dateStr, timeStr) => {
+    if (!dateStr || !timeStr) return false;
+    const eventDateTime = new Date(`${dateStr}T${timeStr}`);
+    return eventDateTime < new Date();
+  };
 
   const filteredEvents = useMemo(() => {
     return events.filter(event => {
+      // 1. Проверка на прошедшие
+      const isPast = isEventPast(event.date, event.time);
+      if (isPast && !showPastEvents) return false;
+
+      // 2. Вкладки навигации
       if (navTab === 'going') {
         const isParticipant = event.attendeesList?.some(a => a.id === user?.uid);
         const isOrganizer = event.organizerId === user?.uid;
@@ -314,6 +360,8 @@ export default function App() {
         const isOrganizer = event.organizerId === user?.uid;
         if (!isOrganizer) return false;
       }
+      
+      // 3. Поиск и фильтры
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
         if (!(event.title?.toLowerCase().includes(query) || event.description?.toLowerCase().includes(query))) return false;
@@ -321,9 +369,10 @@ export default function App() {
       if (selectedCategory !== 'Все' && event.category !== selectedCategory) return false;
       if (filterCity && !(event.city?.toLowerCase().includes(filterCity.toLowerCase()) || event.location?.toLowerCase().includes(filterCity.toLowerCase()))) return false;
       if (filterDate && event.date !== filterDate) return false;
+      
       return true;
     });
-  }, [events, navTab, searchQuery, selectedCategory, filterCity, filterDate, user]);
+  }, [events, navTab, searchQuery, selectedCategory, filterCity, filterDate, user, showPastEvents]);
 
   const handleEventImageChange = async (e) => {
     if (e.target.files && e.target.files[0]) {
@@ -401,6 +450,7 @@ export default function App() {
     return <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex items-center justify-center"><Loader2 className="w-10 h-10 animate-spin text-orange-500" /></div>;
   }
 
+  // 1. ЭКРАН ВХОДА И РЕГИСТРАЦИИ
   if (!user) {
     return (
       <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex flex-col items-center justify-center p-4">
@@ -430,15 +480,58 @@ export default function App() {
     );
   }
 
+  // 2. ЭКРАН ВЕРИФИКАЦИИ ПОЧТЫ (Если вошел, но не подтвердил)
+  if (user && !emailVerified) {
+    return (
+      <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white/80 backdrop-blur-xl rounded-[32px] shadow-2xl p-8 border border-white/50 text-center relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-orange-400 to-purple-500"></div>
+          
+          <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <MailWarning className="w-10 h-10 text-orange-500" />
+          </div>
+          
+          <h2 className="text-2xl font-extrabold text-gray-900 mb-3">Подтвердите почту</h2>
+          <p className="text-gray-500 font-medium mb-8 text-sm leading-relaxed">
+            Мы отправили письмо на <br/><span className="text-gray-900 font-bold">{user.email}</span>.<br/>
+            Перейдите по ссылке внутри, чтобы получить доступ к приложению.
+          </p>
+
+          <div className="space-y-4">
+            <button onClick={checkEmailVerification} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:shadow-lg transition-all flex justify-center items-center gap-2">
+              <RefreshCw className="w-5 h-5" /> Я подтвердил(а) почту
+            </button>
+            <button onClick={resendVerificationEmail} disabled={isResendingEmail} className="w-full bg-gray-100 text-gray-700 font-bold py-4 rounded-3xl hover:bg-gray-200 transition-all disabled:opacity-50 text-sm">
+              {isResendingEmail ? 'Отправка...' : 'Отправить письмо еще раз'}
+            </button>
+            <button onClick={handleLogout} className="w-full text-red-500 font-bold py-3 text-sm hover:underline">
+              Выйти и сменить аккаунт
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. ОСНОВНОЕ ПРИЛОЖЕНИЕ
   return (
     <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 text-slate-800 font-sans pb-24">
       
-      {/* ГЛАВНАЯ ШАПКА (Скрыта в профиле и чатах, чтобы там был свой заголовок) */}
+      {/* ГЛАВНАЯ ШАПКА */}
       {navTab !== 'profile' && navTab !== 'chats' && (
         <header className="bg-white/40 backdrop-blur-xl border-b border-white/50 sticky top-0 z-30 pt-[env(safe-area-inset-top)] transition-all">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between pb-2 mt-2">
             <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-orange-500 to-purple-600 tracking-tight">MeetPoint</h1>
-            <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center gap-2 bg-gradient-to-r from-orange-400 to-purple-500 text-white px-5 py-2.5 rounded-full text-sm font-bold shadow-md hover:shadow-lg transition-all active:scale-95"><Plus className="w-4 h-4" /><span className="hidden sm:inline">Создать</span></button>
+            <div className="flex items-center gap-3">
+              <button className="relative p-2 rounded-full bg-white/50 text-gray-600 hover:bg-white hover:text-purple-500 transition-all shadow-sm">
+                <Bell className="w-5 h-5" />
+                {/* Индикатор непрочитанных (заглушка для будущего бэкенда) */}
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
+              </button>
+              <button onClick={() => setIsCreateModalOpen(true)} className="flex items-center gap-2 bg-gradient-to-r from-orange-400 to-purple-500 text-white px-5 py-2.5 rounded-full text-sm font-bold shadow-md hover:shadow-lg transition-all active:scale-95">
+                <Plus className="w-4 h-4" /><span className="hidden sm:inline">Создать</span>
+              </button>
+            </div>
           </div>
         </header>
       )}
@@ -446,7 +539,7 @@ export default function App() {
       {/* ОСНОВНОЙ КОНТЕНТ */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-[max(env(safe-area-inset-top),1.5rem)]">
         
-        {/* ВКЛАДКИ: ВСЕ, Я ИДУ, МОИ (ЛЕНТА СОБЫТИЙ) */}
+        {/* ВКЛАДКИ: ВСЕ, Я ИДУ, МОИ */}
         {(navTab === 'all' || navTab === 'going' || navTab === 'organized') && (
           <>
             <div className="mb-6">
@@ -459,9 +552,17 @@ export default function App() {
               </div>
 
               {showFilters && (
-                <div className="grid grid-cols-2 gap-4 mb-5 p-5 bg-white/70 backdrop-blur-xl rounded-[32px] shadow-sm border border-white">
-                  <div><label className="block text-xs font-bold text-gray-500 mb-1.5 ml-1">Город</label><input type="text" placeholder="Любой город" value={filterCity} onChange={(e) => setFilterCity(e.target.value)} className="w-full px-4 py-3 bg-white/80 border-none rounded-2xl text-sm font-medium focus:ring-2 focus:ring-purple-400 outline-none shadow-inner" /></div>
-                  <div><label className="block text-xs font-bold text-gray-500 mb-1.5 ml-1">Дата</label><input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="w-full px-4 py-3 bg-white/80 border-none rounded-2xl text-sm font-medium focus:ring-2 focus:ring-purple-400 outline-none text-gray-600 shadow-inner" /></div>
+                <div className="mb-5 p-5 bg-white/70 backdrop-blur-xl rounded-[32px] shadow-sm border border-white">
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div><label className="block text-xs font-bold text-gray-500 mb-1.5 ml-1">Город</label><input type="text" placeholder="Любой" value={filterCity} onChange={(e) => setFilterCity(e.target.value)} className="w-full px-4 py-3 bg-white/80 border-none rounded-2xl text-sm font-medium focus:ring-2 focus:ring-purple-400 outline-none shadow-inner" /></div>
+                    <div><label className="block text-xs font-bold text-gray-500 mb-1.5 ml-1">Дата</label><input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} className="w-full px-4 py-3 bg-white/80 border-none rounded-2xl text-sm font-medium focus:ring-2 focus:ring-purple-400 outline-none text-gray-600 shadow-inner" /></div>
+                  </div>
+                  <div className="flex items-center justify-between p-3 bg-white/50 rounded-2xl">
+                    <span className="text-sm font-bold text-gray-700">Архив событий</span>
+                    <button onClick={() => setShowPastEvents(!showPastEvents)} className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${showPastEvents ? 'bg-purple-500' : 'bg-gray-300'}`}>
+                      <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${showPastEvents ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -480,26 +581,35 @@ export default function App() {
               <div className="flex flex-col items-center justify-center py-20"><Loader2 className="w-10 h-10 animate-spin text-purple-400" /></div>
             ) : filteredEvents.length > 0 ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                {filteredEvents.map(event => (
-                  <div key={event.docId} onClick={() => setSelectedEvent(event)} className="bg-white/80 backdrop-blur-sm rounded-[32px] p-2 shadow-sm hover:shadow-xl transition-all cursor-pointer group flex flex-col h-full border border-white">
+                {filteredEvents.map(event => {
+                  const isPast = isEventPast(event.date, event.time);
+                  return (
+                  <div key={event.docId} onClick={() => setSelectedEvent(event)} className={`bg-white/80 backdrop-blur-sm rounded-[32px] p-2 shadow-sm hover:shadow-xl transition-all cursor-pointer group flex flex-col h-full border border-white ${isPast ? 'opacity-60 grayscale-[40%]' : ''}`}>
                     <div className="relative h-48 bg-gray-100 rounded-[28px] overflow-hidden">
                       <img src={event.image} alt={event.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-out" />
-                      <div className="absolute top-3 left-3 bg-white/90 backdrop-blur-md px-3.5 py-1.5 rounded-full text-xs font-bold text-purple-700 shadow-sm">{event.category}</div>
+                      
+                      <div className="absolute top-3 left-3 flex gap-2">
+                        <span className="bg-white/90 backdrop-blur-md px-3.5 py-1.5 rounded-full text-xs font-bold text-purple-700 shadow-sm">{event.category}</span>
+                        {isPast && <span className="bg-gray-800/90 backdrop-blur-md text-white px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm">Прошло</span>}
+                      </div>
+
                       {event.organizerId === user?.uid && <div className="absolute top-3 right-3 bg-gradient-to-r from-orange-400 to-purple-500 text-white px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm">Моё</div>}
                     </div>
-                    <div className="p-4 flex flex-col flex-grow">
-                      <h3 className="text-xl font-extrabold text-gray-900 mb-3 line-clamp-2 leading-tight">{event.title}</h3>
+                    <div className="p-4 flex flex-col flex-grow relative">
+                      <h3 className={`text-xl font-extrabold mb-3 line-clamp-2 leading-tight ${isPast ? 'text-gray-600' : 'text-gray-900'}`}>{event.title}</h3>
                       <div className="space-y-2.5 mb-4 flex-grow">
-                        <div className="flex items-center text-sm text-gray-600 font-medium"><Calendar className="w-4 h-4 mr-2.5 text-purple-400" /> <span>{event.date} • {event.time}</span></div>
-                        <div className="flex items-start text-sm text-gray-600 font-medium"><MapPin className="w-4 h-4 mr-2.5 text-orange-400 shrink-0 mt-0.5" /> <span className="line-clamp-2">{event.city ? `${event.city}, ` : ''}{event.location}</span></div>
+                        <div className={`flex items-center text-sm font-medium ${isPast ? 'text-gray-500' : 'text-gray-600'}`}><Calendar className={`w-4 h-4 mr-2.5 ${isPast ? 'text-gray-400' : 'text-purple-400'}`} /> <span>{event.date} • {event.time}</span></div>
+                        <div className={`flex items-start text-sm font-medium ${isPast ? 'text-gray-500' : 'text-gray-600'}`}><MapPin className={`w-4 h-4 mr-2.5 shrink-0 mt-0.5 ${isPast ? 'text-gray-400' : 'text-orange-400'}`} /> <span className="line-clamp-2">{event.city ? `${event.city}, ` : ''}{event.location}</span></div>
                       </div>
                       <div className="pt-4 border-t border-gray-100 flex items-center justify-between mt-auto">
                         <div className="flex items-center text-sm font-bold text-gray-500"><Users className="w-4 h-4 mr-1.5 text-gray-400" /> {event.attendees}{event.maxAttendees && `/${event.maxAttendees}`}</div>
-                        <button onClick={(e) => { e.stopPropagation(); if (event.organizerId === user?.uid) return; event.attendeesList?.some(a => a.id === user?.uid) ? handleLeaveEvent(event) : handleJoinEvent(event); }} className={`px-5 py-2.5 rounded-full text-sm font-bold z-10 transition-colors ${event.organizerId === user?.uid ? 'bg-gray-100 text-gray-600' : event.attendeesList?.some(a => a.id === user?.uid) ? 'bg-red-50 text-red-500 hover:bg-red-100' : 'bg-purple-50 text-purple-600 hover:bg-purple-100'}`}>{event.organizerId === user?.uid ? 'Орг' : event.attendeesList?.some(a => a.id === user?.uid) ? 'Не пойду' : 'Пойду'}</button>
+                        {!isPast && (
+                          <button onClick={(e) => { e.stopPropagation(); if (event.organizerId === user?.uid) return; event.attendeesList?.some(a => a.id === user?.uid) ? handleLeaveEvent(event) : handleJoinEvent(event); }} className={`px-5 py-2.5 rounded-full text-sm font-bold z-10 transition-colors ${event.organizerId === user?.uid ? 'bg-gray-100 text-gray-600' : event.attendeesList?.some(a => a.id === user?.uid) ? 'bg-red-50 text-red-500 hover:bg-red-100' : 'bg-purple-50 text-purple-600 hover:bg-purple-100'}`}>{event.organizerId === user?.uid ? 'Орг' : event.attendeesList?.some(a => a.id === user?.uid) ? 'Не пойду' : 'Пойду'}</button>
+                        )}
                       </div>
                     </div>
                   </div>
-                ))}
+                )})}
               </div>
             ) : (
               <div className="text-center py-24 bg-white/50 backdrop-blur-xl rounded-[32px] border border-white shadow-sm">
@@ -569,7 +679,7 @@ export default function App() {
 
       </main>
 
-      {/* НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ (ТАББАР) */}
+      {/* НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ */}
       {(!selectedEvent && !activeDirectChat && !isFirstLogin && !isCreateModalOpen && !viewingUser) && (
         <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-2xl border-t border-white/50 z-40 pb-[max(env(safe-area-inset-bottom),0.5rem)] shadow-[0_-20px_40px_rgba(0,0,0,0.03)]">
           <div className="flex justify-around items-center h-[72px] max-w-md mx-auto px-2">
@@ -671,7 +781,13 @@ export default function App() {
             <img src={selectedEvent.image} className="w-full h-full object-cover" alt="Обложка" />
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-black/10"></div>
             <button onClick={() => { setSelectedEvent(null); setActiveTab('info'); }} className="absolute top-4 left-4 bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-white/40 transition-colors z-10 mt-[env(safe-area-inset-top)] border border-white/30"><ChevronLeft className="w-6 h-6" /></button>
-            <div className="absolute bottom-0 inset-x-0 p-6 pt-20"><span className="px-4 py-1.5 bg-white/20 backdrop-blur-md text-white text-xs font-bold rounded-full mb-3 inline-block shadow-sm border border-white/30">{selectedEvent.category}</span><h2 className="text-3xl font-extrabold text-white leading-tight drop-shadow-md">{selectedEvent.title}</h2></div>
+            <div className="absolute bottom-0 inset-x-0 p-6 pt-20">
+              <div className="flex gap-2 mb-3">
+                <span className="px-4 py-1.5 bg-white/20 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm border border-white/30">{selectedEvent.category}</span>
+                {isEventPast(selectedEvent.date, selectedEvent.time) && <span className="px-4 py-1.5 bg-gray-800/80 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm">Прошло</span>}
+              </div>
+              <h2 className="text-3xl font-extrabold text-white leading-tight drop-shadow-md">{selectedEvent.title}</h2>
+            </div>
           </div>
           <div className="flex px-6 shrink-0 bg-white border-b border-gray-100 shadow-sm relative z-10 rounded-t-[32px] -mt-8">
             <button onClick={() => setActiveTab('info')} className={`py-6 mr-8 font-extrabold border-b-[3px] transition-colors ${activeTab === 'info' ? 'border-purple-500 text-purple-700' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>О событии</button>
@@ -711,6 +827,8 @@ export default function App() {
                 showDeleteConfirm ? (<div className="flex gap-3 w-full animate-in fade-in"><button onClick={() => handleDeleteEvent(selectedEvent)} className="flex-1 py-4 bg-red-500 text-white font-bold rounded-3xl shadow-sm hover:bg-red-600">Точно удалить</button><button onClick={() => setShowDeleteConfirm(false)} className="flex-1 py-4 bg-gray-100 text-gray-700 font-bold rounded-3xl hover:bg-gray-200">Отмена</button></div>) : (<button onClick={() => setShowDeleteConfirm(true)} className="w-full py-4 bg-red-50 text-red-500 font-bold rounded-3xl flex items-center justify-center gap-2 hover:bg-red-100 transition-colors"><Trash2 className="w-5 h-5"/> Удалить событие</button>)
               ) : isParticipant ? (
                 <button onClick={() => handleLeaveEvent(selectedEvent)} className="w-full py-4 bg-gray-100 text-gray-600 font-bold rounded-3xl flex items-center justify-center gap-2 hover:bg-gray-200 transition-colors"><CalendarOff className="w-5 h-5"/> Отменить участие</button>
+              ) : isEventPast(selectedEvent.date, selectedEvent.time) ? (
+                <button disabled className="w-full py-4 bg-gray-200 text-gray-500 font-extrabold text-lg rounded-3xl transition-all">Событие завершено</button>
               ) : (
                 <button onClick={() => handleJoinEvent(selectedEvent)} disabled={selectedEvent.maxAttendees && selectedEvent.attendees >= selectedEvent.maxAttendees} className="w-full py-4 bg-gradient-to-r from-orange-400 to-purple-500 text-white font-extrabold text-lg rounded-3xl shadow-lg hover:shadow-xl disabled:opacity-50 transition-all">Присоединиться</button>
               )}
@@ -745,7 +863,6 @@ export default function App() {
                       </div>
                     )}
                     
-                    {/* КНОПКА "НАПИСАТЬ СООБЩЕНИЕ" */}
                     {user?.uid !== viewingUser.id && (
                        <button onClick={() => handleStartDirectChat(viewingUser)} className="mt-6 w-full py-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-extrabold rounded-3xl shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2"><MessageCircle className="w-5 h-5"/> Написать сообщение</button>
                     )}
@@ -801,3 +918,4 @@ export default function App() {
     </div>
   );
 }
+```eof
