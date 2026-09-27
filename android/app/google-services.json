@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "975617549003",
+    "project_id": "meet-point-73afa",
+    "storage_bucket": "meet-point-73afa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:975617549003:android:8f6ec4d96e84a3f626314e",
+        "android_client_info": {
+          "package_name": "com.meetpoint.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "975617549003-q29t34e2sf0193dolkj1ite119huujvm.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJvrX9YZyoE-_H47-7PHSQGBoZddRvlOA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "975617549003-q29t34e2sf0193dolkj1ite119huujvm.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

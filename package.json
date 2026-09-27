@@ -17,6 +17,7 @@
     "@capacitor/android": "^8.5.2",
     "@capacitor/cli": "^8.5.2",
     "@capacitor/core": "^8.5.2",
+    "@capacitor/push-notifications": "^8.1.2",
     "@vitejs/plugin-react": "^6.1.1",
     "firebase": "^12.19.0",
     "firebase-admin": "^14.5.0",
