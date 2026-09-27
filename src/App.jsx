@@ -12,20 +12,24 @@ import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnio
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
 // ==========================================
-// 🚨 ВСТАВЬТЕ СВОИ ОСНОВНЫЕ КЛЮЧИ FIREBASE СЮДА
+// 🚨 1. ВСТАВЬТЕ СВОИ КЛЮЧИ FIREBASE СЮДА
 // ==========================================
 const firebaseConfig = {
-  apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
+ apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
   authDomain: "meet-point-73afa.firebaseapp.com",
   projectId: "meet-point-73afa",
   storageBucket: "meet-point-73afa.firebasestorage.app",
   messagingSenderId: "975617549003",
   appId: "1:975617549003:web:e0e2f7233c6fca0e26314e"
 };
-// ==========================================
 
-// 🚨 ВСТАВЬТЕ СКОПИРОВАННЫЙ VAPID KEY СЮДА
+// 🚨 2. ВСТАВЬТЕ СКОПИРОВАННЫЙ VAPID KEY СЮДА
 const VAPID_KEY = "BC-H7FIJGhfkBohlUR8nQPOE4okMpjc0qc84JCWNA4uZjhyOXWUsG0ClNg3v5KRgEefZYFzg3nFCKtSYcXMpWug";
+
+// 🚨 3. ВСТАВЬТЕ ССЫЛКУ НА ВАШ VERCEL САЙТ (БЕЗ СЛЕША НА КОНЦЕ)
+// Пример: "https://meetpoint-app.vercel.app"
+const VERCEL_URL = "https://meetpoint-team-app.vercel.app/";
+// ==========================================
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -34,7 +38,6 @@ const db = getFirestore(app);
 // Инициализируем систему веб-уведомлений
 let messaging;
 try {
-  // Инициализируем только если это НЕ нативное Android приложение
   if (!Capacitor.isNativePlatform()) {
     messaging = getMessaging(app);
   }
@@ -98,7 +101,6 @@ export default function App() {
   // === НАСТРОЙКА НАТИВНЫХ УВЕДОМЛЕНИЙ (ANDROID) ===
   useEffect(() => {
     if (Capacitor.isNativePlatform()) {
-      // 1. Слушаем успешную выдачу токена от Android
       PushNotifications.addListener('registration', async (token) => {
         if (user) {
           try {
@@ -111,12 +113,10 @@ export default function App() {
         }
       });
 
-      // 2. Слушаем ошибки
       PushNotifications.addListener('registrationError', (error) => {
         alert("Ошибка настройки Android Push: " + JSON.stringify(error));
       });
 
-      // 3. Слушаем входящие сообщения на Android
       PushNotifications.addListener('pushNotificationReceived', (notification) => {
         console.log('Входящее Android уведомление: ', notification);
       });
@@ -265,7 +265,7 @@ export default function App() {
     finally { setIsProfileSaving(false); }
   };
 
-  // === 🔔 УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ ===
+  // === УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ ===
   const requestNotificationPermission = async () => {
     if (!user) {
       alert("Авторизуйтесь, чтобы получать уведомления.");
@@ -274,7 +274,6 @@ export default function App() {
     
     try {
       if (Capacitor.isNativePlatform()) {
-        // --- 1. ЛОГИКА ДЛЯ ANDROID (APK) ---
         let permStatus = await PushNotifications.checkPermissions();
         if (permStatus.receive === 'prompt') {
           permStatus = await PushNotifications.requestPermissions();
@@ -282,11 +281,9 @@ export default function App() {
         if (permStatus.receive !== 'granted') {
           return alert("Вы запретили уведомления в настройках телефона.");
         }
-        // Если разрешил - регистрируем устройство (это вызовет слушатель в useEffect сверху)
         await PushNotifications.register();
         
       } else {
-        // --- 2. ЛОГИКА ДЛЯ WEB (Браузер / PWA) ---
         if (!messaging) {
           alert("Push-уведомления не поддерживаются в этом браузере.");
           return;
@@ -294,17 +291,21 @@ export default function App() {
         
         const permission = await Notification.requestPermission();
         if (permission === 'granted') {
-          // Запрашиваем токен
-          const token = await getToken(messaging, { vapidKey: VAPID_KEY });
+          const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+          const token = await getToken(messaging, { 
+            vapidKey: VAPID_KEY,
+            serviceWorkerRegistration: registration 
+          });
+          
           if (token) {
             await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
             setUserProfile(prev => ({ ...prev, fcmToken: token }));
             alert("Отлично! Вы будете получать веб-уведомления.");
           } else {
-            alert("Не удалось получить токен. Проверьте настройки.");
+            alert("Не удалось получить токен.");
           }
         } else {
-          alert("Вы запретили присылать уведомления.");
+          alert("Вы запретили уведомления.");
         }
       }
     } catch (error) {
@@ -404,8 +405,9 @@ export default function App() {
       const partnerId = activeDirectChat.partner.id;
       const partnerDoc = await getDoc(doc(db, 'users', partnerId));
       
+      // ИСПОЛЬЗУЕМ АБСОЛЮТНЫЙ ПУТЬ VERCEL_URL
       if (partnerDoc.exists() && partnerDoc.data().fcmToken) {
-         fetch('/api/push', {
+         fetch(`${VERCEL_URL}/api/push`, {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
            body: JSON.stringify({
@@ -413,9 +415,8 @@ export default function App() {
              title: userProfile.name,
              body: messageText.length > 50 ? messageText.substring(0, 47) + '...' : messageText
            })
-         }).catch(err => console.error('Ошибка вызова API Vercel:', err));
+         }).catch(err => console.error('Ошибка API Vercel:', err));
       }
-
     } catch (error) { alert("Ошибка отправки: " + error.message); }
   };
 
@@ -430,13 +431,35 @@ export default function App() {
     return () => unsubscribe();
   }, [user, selectedEvent]);
 
+  // ОБНОВЛЕНО: Отправка пушей всем участникам мероприятия
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !user || !selectedEvent) return;
     try {
+      const messageText = newMessage.trim();
       const messagesRef = collection(db, 'events', selectedEvent.docId, 'messages');
-      await addDoc(messagesRef, { text: newMessage.trim(), userId: user.uid, userName: userProfile.name || 'Гость', userAvatar: userProfile.avatar || '', createdAt: new Date().toISOString() });
+      await addDoc(messagesRef, { text: messageText, userId: user.uid, userName: userProfile.name || 'Гость', userAvatar: userProfile.avatar || '', createdAt: new Date().toISOString() });
       setNewMessage('');
+
+      // РАССЫЛКА ПУШЕЙ УЧАСТНИКАМ (кроме самого отправителя)
+      if (selectedEvent.attendeesList && selectedEvent.attendeesList.length > 0) {
+        selectedEvent.attendeesList.forEach(async (attendee) => {
+          if (attendee.id !== user.uid) { // Не отправляем пуш самому себе
+            const attendeeDoc = await getDoc(doc(db, 'users', attendee.id));
+            if (attendeeDoc.exists() && attendeeDoc.data().fcmToken) {
+               fetch(`${VERCEL_URL}/api/push`, {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'application/json' },
+                 body: JSON.stringify({
+                   token: attendeeDoc.data().fcmToken,
+                   title: `Чат: ${selectedEvent.title}`,
+                   body: `${userProfile.name}: ${messageText.length > 30 ? messageText.substring(0, 27) + '...' : messageText}`
+                 })
+               }).catch(err => console.error('Ошибка API Vercel:', err));
+            }
+          }
+        });
+      }
     } catch (error) { alert("Ошибка отправки: " + error.message); }
   };
 
@@ -635,7 +658,6 @@ export default function App() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between pb-2 mt-2">
             <h1 className="text-2xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-orange-500 to-purple-600 tracking-tight">MeetPoint</h1>
             <div className="flex items-center gap-3">
-              {/* КНОПКА ЗАПРОСА УВЕДОМЛЕНИЙ */}
               <button onClick={requestNotificationPermission} className={`relative p-2 rounded-full transition-all shadow-sm ${userProfile.fcmToken ? 'bg-purple-100 text-purple-600' : 'bg-white/50 text-gray-600 hover:bg-white'}`} title="Включить уведомления">
                 {userProfile.fcmToken ? <BellRing className="w-5 h-5" /> : <Bell className="w-5 h-5" />}
                 {!userProfile.fcmToken && <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>}
@@ -733,11 +755,10 @@ export default function App() {
           </>
         )}
 
-        {/* ВКЛАДКА: ЧАТЫ (DIRECT MESSAGES) */}
+        {/* ВКЛАДКА: ЧАТЫ */}
         {navTab === 'chats' && (
           <div className="w-full max-w-md mx-auto">
             <h2 className="text-3xl font-extrabold text-gray-900 mb-6 pl-1 tracking-tight">Сообщения</h2>
-            
             {userChats.length > 0 ? (
               <div className="space-y-3">
                 {userChats.map(chat => {
@@ -767,7 +788,7 @@ export default function App() {
           </div>
         )}
 
-        {/* ВКЛАДКА: ПРОФИЛЬ (СОБСТВЕННЫЙ) */}
+        {/* ВКЛАДКА: ПРОФИЛЬ */}
         {navTab === 'profile' && (
           <div className="w-full max-w-md mx-auto bg-white/80 backdrop-blur-xl rounded-[32px] overflow-hidden shadow-sm border border-white">
             <div className="px-6 py-5 border-b border-white/50 shrink-0">
@@ -795,39 +816,17 @@ export default function App() {
       {(!selectedEvent && !activeDirectChat && !isFirstLogin && !isCreateModalOpen && !viewingUser) && (
         <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-2xl border-t border-white/50 z-40 pb-[max(env(safe-area-inset-bottom),0.5rem)] shadow-[0_-20px_40px_rgba(0,0,0,0.03)]">
           <div className="flex justify-around items-center h-[72px] max-w-md mx-auto px-2">
-            
-            <button onClick={() => setNavTab('all')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'all' ? 'text-purple-600 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'all' ? 'bg-purple-50 shadow-sm' : ''}`}><Compass className={`w-6 h-6 ${navTab==='all'?'fill-purple-50':''}`} /></div>
-              <span className="text-[10px] font-bold">Все</span>
-            </button>
-            
-            <button onClick={() => setNavTab('going')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'going' ? 'text-orange-500 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'going' ? 'bg-orange-50 shadow-sm' : ''}`}><Ticket className={`w-6 h-6 ${navTab==='going'?'fill-orange-50':''}`} /></div>
-              <span className="text-[10px] font-bold">Я иду</span>
-            </button>
-            
-            <button onClick={() => setNavTab('organized')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'organized' ? 'text-purple-600 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'organized' ? 'bg-purple-50 shadow-sm' : ''}`}><Crown className={`w-6 h-6 ${navTab==='organized'?'fill-purple-50':''}`} /></div>
-              <span className="text-[10px] font-bold">Мои</span>
-            </button>
-
-            <button onClick={() => setNavTab('chats')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'chats' ? 'text-blue-500 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'chats' ? 'bg-blue-50 shadow-sm' : ''}`}><MessageCircle className={`w-6 h-6 ${navTab==='chats'?'fill-blue-50':''}`} /></div>
-              <span className="text-[10px] font-bold">Чаты</span>
-            </button>
-
-            <button onClick={() => setNavTab('profile')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'profile' ? 'text-gray-900 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
-              <div className={`p-1.5 rounded-full transition-all duration-300 border-2 ${navTab === 'profile' ? 'border-gray-900 shadow-sm' : 'border-transparent'}`}>
-                {userProfile.avatar ? <img src={userProfile.avatar} className="w-7 h-7 rounded-full object-cover" alt="av"/> : <User className="w-7 h-7" />}
-              </div>
-              <span className="text-[10px] font-bold">Профиль</span>
-            </button>
-
+            <button onClick={() => setNavTab('all')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'all' ? 'text-purple-600 scale-105' : 'text-gray-400 hover:text-gray-600'}`}><div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'all' ? 'bg-purple-50 shadow-sm' : ''}`}><Compass className={`w-6 h-6 ${navTab==='all'?'fill-purple-50':''}`} /></div><span className="text-[10px] font-bold">Все</span></button>
+            <button onClick={() => setNavTab('going')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'going' ? 'text-orange-500 scale-105' : 'text-gray-400 hover:text-gray-600'}`}><div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'going' ? 'bg-orange-50 shadow-sm' : ''}`}><Ticket className={`w-6 h-6 ${navTab==='going'?'fill-orange-50':''}`} /></div><span className="text-[10px] font-bold">Я иду</span></button>
+            <button onClick={() => setNavTab('organized')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'organized' ? 'text-purple-600 scale-105' : 'text-gray-400 hover:text-gray-600'}`}><div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'organized' ? 'bg-purple-50 shadow-sm' : ''}`}><Crown className={`w-6 h-6 ${navTab==='organized'?'fill-purple-50':''}`} /></div><span className="text-[10px] font-bold">Мои</span></button>
+            <button onClick={() => setNavTab('chats')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'chats' ? 'text-blue-500 scale-105' : 'text-gray-400 hover:text-gray-600'}`}><div className={`p-2 rounded-2xl transition-all duration-300 ${navTab === 'chats' ? 'bg-blue-50 shadow-sm' : ''}`}><MessageCircle className={`w-6 h-6 ${navTab==='chats'?'fill-blue-50':''}`} /></div><span className="text-[10px] font-bold">Чаты</span></button>
+            <button onClick={() => setNavTab('profile')} className={`flex flex-col items-center justify-center w-full h-full gap-1 transition-all duration-300 ${navTab === 'profile' ? 'text-gray-900 scale-105' : 'text-gray-400 hover:text-gray-600'}`}><div className={`p-1.5 rounded-full transition-all duration-300 border-2 ${navTab === 'profile' ? 'border-gray-900 shadow-sm' : 'border-transparent'}`}>{userProfile.avatar ? <img src={userProfile.avatar} className="w-7 h-7 rounded-full object-cover" alt="av"/> : <User className="w-7 h-7" />}</div><span className="text-[10px] font-bold">Профиль</span></button>
           </div>
         </nav>
       )}
 
-      {/* МОДАЛКА ПЕРВОГО ВХОДА */}
+      {/* ОСТАЛЬНЫЕ МОДАЛКИ (Первый вход, создание, профиль пользователя, чаты) ОСТАЛИСЬ БЕЗ ИЗМЕНЕНИЙ */}
+      {/* ... (Первый вход) ... */}
       {isFirstLogin && (
         <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] animate-in fade-in duration-300">
           <div className="bg-white rounded-[32px] w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
@@ -851,7 +850,7 @@ export default function App() {
         </div>
       )}
 
-      {/* МОДАЛКА СОЗДАНИЯ СОБЫТИЯ */}
+      {/* ... (Создание события) ... */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-md flex items-end sm:items-center justify-center pt-[env(safe-area-inset-top)] animate-in fade-in duration-300">
           <div className="bg-white rounded-t-[32px] sm:rounded-[32px] w-full max-w-lg overflow-hidden flex flex-col h-[90vh] sm:h-auto sm:max-h-[90vh] shadow-2xl animate-in slide-in-from-bottom-5">
@@ -860,33 +859,19 @@ export default function App() {
               <button onClick={() => setIsCreateModalOpen(false)} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors"><X className="w-6 h-6 text-gray-600" /></button>
             </div>
             <form id="createEventForm" onSubmit={handleCreateEvent} className="p-6 overflow-y-auto space-y-5 flex-1">
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2 ml-1">Обложка</label>
-                <div className="relative w-full h-48 bg-gray-50 rounded-[28px] flex flex-col items-center justify-center overflow-hidden border-2 border-dashed border-gray-200 hover:bg-gray-100 transition-colors">{imagePreview ? <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" /> : <div className="text-center text-gray-400"><Camera className="w-10 h-10 mx-auto mb-2 text-purple-300" /><span className="text-sm font-bold">Добавить фото</span></div>}<input type="file" accept="image/*" onChange={handleEventImageChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
-              </div>
+              <div><label className="block text-sm font-bold text-gray-700 mb-2 ml-1">Обложка</label><div className="relative w-full h-48 bg-gray-50 rounded-[28px] flex flex-col items-center justify-center overflow-hidden border-2 border-dashed border-gray-200 hover:bg-gray-100 transition-colors">{imagePreview ? <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" /> : <div className="text-center text-gray-400"><Camera className="w-10 h-10 mx-auto mb-2 text-purple-300" /><span className="text-sm font-bold">Добавить фото</span></div>}<input type="file" accept="image/*" onChange={handleEventImageChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Название *</label><input required type="text" value={newEvent.title} onChange={e => setNewEvent({...newEvent, title: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Как назовем встречу?" /></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Описание</label><textarea value={newEvent.description} onChange={e => setNewEvent({...newEvent, description: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium resize-none shadow-inner" rows="3" placeholder="Кратко о главном..."></textarea></div>
-              <div className="grid grid-cols-2 gap-4">
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Город *</label><input required type="text" value={newEvent.city} onChange={e => setNewEvent({...newEvent, city: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" /></div>
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Место *</label><input required type="text" value={newEvent.location} onChange={e => setNewEvent({...newEvent, location: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Кафе, Парк..." /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Дата *</label><input required type="date" value={newEvent.date} onChange={e => setNewEvent({...newEvent, date: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-600 shadow-inner" /></div>
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Время *</label><input required type="time" value={newEvent.time} onChange={e => setNewEvent({...newEvent, time: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-600 shadow-inner" /></div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Категория</label><select value={newEvent.category} onChange={e => setNewEvent({...newEvent, category: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-800 shadow-inner">{CATEGORIES.filter(c => c !== 'Все').map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div>
-                <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Лимит людей</label><input type="number" value={newEvent.maxAttendees} onChange={e => setNewEvent({...newEvent, maxAttendees: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Без лимита" /></div>
-              </div>
+              <div className="grid grid-cols-2 gap-4"><div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Город *</label><input required type="text" value={newEvent.city} onChange={e => setNewEvent({...newEvent, city: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" /></div><div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Место *</label><input required type="text" value={newEvent.location} onChange={e => setNewEvent({...newEvent, location: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Кафе, Парк..." /></div></div>
+              <div className="grid grid-cols-2 gap-4"><div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Дата *</label><input required type="date" value={newEvent.date} onChange={e => setNewEvent({...newEvent, date: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-600 shadow-inner" /></div><div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Время *</label><input required type="time" value={newEvent.time} onChange={e => setNewEvent({...newEvent, time: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-600 shadow-inner" /></div></div>
+              <div className="grid grid-cols-2 gap-4"><div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Категория</label><select value={newEvent.category} onChange={e => setNewEvent({...newEvent, category: e.target.value})} className="w-full px-4 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium text-gray-800 shadow-inner">{CATEGORIES.filter(c => c !== 'Все').map(cat => <option key={cat} value={cat}>{cat}</option>)}</select></div><div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Лимит людей</label><input type="number" value={newEvent.maxAttendees} onChange={e => setNewEvent({...newEvent, maxAttendees: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Без лимита" /></div></div>
             </form>
-            <div className="p-5 border-t border-gray-50 bg-gray-50/50 shrink-0 pb-[max(env(safe-area-inset-bottom),1rem)]">
-              <button type="submit" form="createEventForm" disabled={isUploading} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-extrabold text-lg py-4 rounded-3xl shadow-md hover:shadow-lg disabled:opacity-50 transition-all">{isUploading ? 'Создание...' : 'Опубликовать событие'}</button>
-            </div>
+            <div className="p-5 border-t border-gray-50 bg-gray-50/50 shrink-0 pb-[max(env(safe-area-inset-bottom),1rem)]"><button type="submit" form="createEventForm" disabled={isUploading} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-extrabold text-lg py-4 rounded-3xl shadow-md hover:shadow-lg disabled:opacity-50 transition-all">{isUploading ? 'Создание...' : 'Опубликовать событие'}</button></div>
           </div>
         </div>
       )}
 
-      {/* ПОЛНОЭКРАННАЯ КАРТОЧКА СОБЫТИЯ */}
+      {/* ... (Карточка события) ... */}
       {selectedEvent && (
         <div className="fixed inset-0 z-[90] bg-white flex flex-col h-[100dvh] overflow-hidden animate-in slide-in-from-right duration-300">
           <div className="relative h-[40vh] min-h-[300px] shrink-0 bg-gray-200">
@@ -894,10 +879,7 @@ export default function App() {
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-black/10"></div>
             <button onClick={() => { setSelectedEvent(null); setActiveTab('info'); }} className="absolute top-4 left-4 bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-white/40 transition-colors z-10 mt-[env(safe-area-inset-top)] border border-white/30"><ChevronLeft className="w-6 h-6" /></button>
             <div className="absolute bottom-0 inset-x-0 p-6 pt-20">
-              <div className="flex gap-2 mb-3">
-                <span className="px-4 py-1.5 bg-white/20 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm border border-white/30">{selectedEvent.category}</span>
-                {isEventPast(selectedEvent.date, selectedEvent.time) && <span className="px-4 py-1.5 bg-gray-800/80 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm">Прошло</span>}
-              </div>
+              <div className="flex gap-2 mb-3"><span className="px-4 py-1.5 bg-white/20 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm border border-white/30">{selectedEvent.category}</span>{isEventPast(selectedEvent.date, selectedEvent.time) && <span className="px-4 py-1.5 bg-gray-800/80 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm">Прошло</span>}</div>
               <h2 className="text-3xl font-extrabold text-white leading-tight drop-shadow-md">{selectedEvent.title}</h2>
             </div>
           </div>
@@ -949,7 +931,7 @@ export default function App() {
         </div>
       )}
 
-      {/* МОДАЛКА ПРОСМОТРА ЧУЖОГО ПРОФИЛЯ */}
+      {/* ... (Чужой профиль) ... */}
       {viewingUser && (
          <div className="fixed inset-0 z-[110] bg-gray-900/60 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] animate-in fade-in duration-200">
            <div className="bg-white rounded-[32px] w-full max-w-sm overflow-hidden flex flex-col shadow-2xl relative animate-in zoom-in-95">
@@ -957,27 +939,14 @@ export default function App() {
                 <div className="p-16 flex justify-center"><Loader2 className="w-8 h-8 animate-spin text-purple-500" /></div>
              ) : (
                <>
-                 <div className="absolute top-4 right-4 z-10">
-                   <button onClick={() => setViewingUser(null)} className="p-2 bg-black/20 hover:bg-black/30 text-white rounded-full transition-colors backdrop-blur-md border border-white/20"><X className="w-5 h-5" /></button>
-                 </div>
+                 <div className="absolute top-4 right-4 z-10"><button onClick={() => setViewingUser(null)} className="p-2 bg-black/20 hover:bg-black/30 text-white rounded-full transition-colors backdrop-blur-md border border-white/20"><X className="w-5 h-5" /></button></div>
                  <div className="bg-gradient-to-br from-orange-300 to-purple-400 h-32 relative"></div>
                  <div className="px-6 pb-6 pt-0 relative flex flex-col items-center">
-                    <div className="w-28 h-28 bg-white rounded-full flex items-center justify-center overflow-hidden border-4 border-white shadow-md -mt-14 mb-4">
-                      {viewingUser.avatar ? <img src={viewingUser.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <UserCircle className="w-full h-full text-gray-300 bg-gray-50" />}
-                    </div>
+                    <div className="w-28 h-28 bg-white rounded-full flex items-center justify-center overflow-hidden border-4 border-white shadow-md -mt-14 mb-4">{viewingUser.avatar ? <img src={viewingUser.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <UserCircle className="w-full h-full text-gray-300 bg-gray-50" />}</div>
                     <h3 className="text-2xl font-extrabold text-gray-900 text-center">{viewingUser.name}</h3>
                     {viewingUser.city && <div className="flex items-center gap-1.5 mt-2 text-gray-500 font-medium bg-gray-50 px-4 py-1.5 rounded-full border border-gray-100"><MapPin className="w-4 h-4 text-orange-400"/> {viewingUser.city}</div>}
-                    
-                    {viewingUser.interests && (
-                      <div className="mt-6 w-full bg-gray-50 p-5 rounded-3xl border border-gray-100">
-                        <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">О себе</p>
-                        <p className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{viewingUser.interests}</p>
-                      </div>
-                    )}
-                    
-                    {user?.uid !== viewingUser.id && (
-                       <button onClick={() => handleStartDirectChat(viewingUser)} className="mt-6 w-full py-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-extrabold rounded-3xl shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2"><MessageCircle className="w-5 h-5"/> Написать сообщение</button>
-                    )}
+                    {viewingUser.interests && (<div className="mt-6 w-full bg-gray-50 p-5 rounded-3xl border border-gray-100"><p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2">О себе</p><p className="text-gray-700 text-sm whitespace-pre-wrap leading-relaxed">{viewingUser.interests}</p></div>)}
+                    {user?.uid !== viewingUser.id && (<button onClick={() => handleStartDirectChat(viewingUser)} className="mt-6 w-full py-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white font-extrabold rounded-3xl shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2"><MessageCircle className="w-5 h-5"/> Написать сообщение</button>)}
                  </div>
                </>
              )}
@@ -985,36 +954,23 @@ export default function App() {
          </div>
       )}
 
-      {/* ПОЛНОЭКРАННЫЙ ЛИЧНЫЙ ЧАТ (DIRECT MESSAGE) */}
+      {/* ... (Личный чат) ... */}
       {activeDirectChat && (
         <div className="fixed inset-0 z-[120] bg-white flex flex-col h-[100dvh] overflow-hidden animate-in slide-in-from-right duration-300">
            <div className="flex items-center gap-3 px-4 h-16 shrink-0 bg-white border-b border-gray-100 shadow-sm pt-[env(safe-area-inset-top)] pb-2 relative z-10 box-content">
              <button onClick={() => setActiveDirectChat(null)} className="p-2 -ml-2 text-gray-500 hover:text-gray-800 transition-colors"><ChevronLeft className="w-7 h-7" /></button>
              <div className="flex items-center gap-3 flex-1 cursor-pointer" onClick={() => handleUserClick(activeDirectChat.partner.id)}>
-               <div className="w-10 h-10 rounded-full overflow-hidden border border-gray-100 shrink-0">
-                 {activeDirectChat.partner.avatar ? <img src={activeDirectChat.partner.avatar} className="w-full h-full object-cover" alt="av" /> : <UserCircle className="w-full h-full text-gray-300" />}
-               </div>
-               <div>
-                 <h3 className="font-extrabold text-gray-900 leading-tight">{activeDirectChat.partner.name}</h3>
-                 <span className="text-[11px] font-bold text-blue-500">Личный чат</span>
-               </div>
+               <div className="w-10 h-10 rounded-full overflow-hidden border border-gray-100 shrink-0">{activeDirectChat.partner.avatar ? <img src={activeDirectChat.partner.avatar} className="w-full h-full object-cover" alt="av" /> : <UserCircle className="w-full h-full text-gray-300" />}</div>
+               <div><h3 className="font-extrabold text-gray-900 leading-tight">{activeDirectChat.partner.name}</h3><span className="text-[11px] font-bold text-blue-500">Личный чат</span></div>
              </div>
            </div>
            
            <div className="flex-1 p-5 space-y-6 overflow-y-auto bg-gray-50/50 pb-10">
               {directMessages.length === 0 ? (
-                 <div className="flex flex-col items-center justify-center h-full text-center text-gray-400">
-                    <MessageCircle className="w-12 h-12 mb-3 text-gray-300" />
-                    <p className="font-medium">Это начало вашей переписки.</p>
-                    <p className="text-sm">Скажите «Привет!»</p>
-                 </div>
+                 <div className="flex flex-col items-center justify-center h-full text-center text-gray-400"><MessageCircle className="w-12 h-12 mb-3 text-gray-300" /><p className="font-medium">Это начало вашей переписки.</p><p className="text-sm">Скажите «Привет!»</p></div>
               ) : (
                 directMessages.map(msg => (
-                  <div key={msg.id} className={`flex flex-col ${msg.userId === user?.uid ? 'items-end' : 'items-start'}`}>
-                    <div className={`px-5 py-3.5 rounded-3xl max-w-[85%] text-[15px] font-medium leading-relaxed shadow-sm ${msg.userId === user?.uid ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'}`}>
-                      {msg.text}
-                    </div>
-                  </div>
+                  <div key={msg.id} className={`flex flex-col ${msg.userId === user?.uid ? 'items-end' : 'items-start'}`}><div className={`px-5 py-3.5 rounded-3xl max-w-[85%] text-[15px] font-medium leading-relaxed shadow-sm ${msg.userId === user?.uid ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'}`}>{msg.text}</div></div>
                 ))
               )}
               <div ref={directMessagesEndRef} />
