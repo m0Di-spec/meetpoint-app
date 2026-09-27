@@ -1,10 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle, Bell, BellRing, MailWarning, RefreshCw } from 'lucide-react';
 
-// ИМПОРТЫ CAPACITOR (ДЛЯ ANDROID)
-import { Capacitor } from '@capacitor/core';
-import { PushNotifications } from '@capacitor/push-notifications';
-
 // ИМПОРТЫ FIREBASE
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail, sendEmailVerification } from 'firebase/auth';
@@ -15,7 +11,7 @@ import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 // 🚨 1. ВСТАВЬТЕ СВОИ КЛЮЧИ FIREBASE СЮДА
 // ==========================================
 const firebaseConfig = {
- apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
+  apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
   authDomain: "meet-point-73afa.firebaseapp.com",
   projectId: "meet-point-73afa",
   storageBucket: "meet-point-73afa.firebasestorage.app",
@@ -28,7 +24,7 @@ const VAPID_KEY = "BC-H7FIJGhfkBohlUR8nQPOE4okMpjc0qc84JCWNA4uZjhyOXWUsG0ClNg3v5
 
 // 🚨 3. ВСТАВЬТЕ ССЫЛКУ НА ВАШ VERCEL САЙТ (БЕЗ СЛЕША НА КОНЦЕ)
 // Пример: "https://meetpoint-app.vercel.app"
-const VERCEL_URL = "https://meetpoint-team-app.vercel.app";
+const VERCEL_URL = "https://meetpoint-team-app.vercel.app/";
 // ==========================================
 
 const app = initializeApp(firebaseConfig);
@@ -38,9 +34,8 @@ const db = getFirestore(app);
 // Инициализируем систему веб-уведомлений
 let messaging;
 try {
-  if (!Capacitor.isNativePlatform()) {
-    messaging = getMessaging(app);
-  }
+  // Для совместимости в окне предпросмотра мы инициализируем веб-пуши всегда
+  messaging = getMessaging(app);
 } catch (e) {
   console.log("Push-уведомления (Web) не поддерживаются.", e);
 }
@@ -98,34 +93,9 @@ export default function App() {
   const [directMessages, setDirectMessages] = useState([]);
   const [newDirectMessage, setNewDirectMessage] = useState('');
 
-  // === НАСТРОЙКА НАТИВНЫХ УВЕДОМЛЕНИЙ (ANDROID) ===
-  useEffect(() => {
-    if (Capacitor.isNativePlatform()) {
-      PushNotifications.addListener('registration', async (token) => {
-        if (user) {
-          try {
-            await updateDoc(doc(db, 'users', user.uid), { fcmToken: token.value });
-            setUserProfile(prev => ({ ...prev, fcmToken: token.value }));
-            alert("Уведомления успешно подключены!");
-          } catch (e) {
-            console.error("Ошибка сохранения токена", e);
-          }
-        }
-      });
-
-      PushNotifications.addListener('registrationError', (error) => {
-        alert("Ошибка настройки Android Push: " + JSON.stringify(error));
-      });
-
-      PushNotifications.addListener('pushNotificationReceived', (notification) => {
-        console.log('Входящее Android уведомление: ', notification);
-      });
-    }
-  }, [user]);
-
   // === СЛУШАТЕЛЬ ВЕБ-УВЕДОМЛЕНИЙ ===
   useEffect(() => {
-    if (messaging && !Capacitor.isNativePlatform()) {
+    if (messaging) {
       const unsubscribe = onMessage(messaging, (payload) => {
         console.log('Получено Web-уведомление:', payload);
         alert(`Уведомление: ${payload.notification?.title}\n${payload.notification?.body}`);
@@ -273,17 +243,6 @@ export default function App() {
     }
     
     try {
-      if (Capacitor.isNativePlatform()) {
-        let permStatus = await PushNotifications.checkPermissions();
-        if (permStatus.receive === 'prompt') {
-          permStatus = await PushNotifications.requestPermissions();
-        }
-        if (permStatus.receive !== 'granted') {
-          return alert("Вы запретили уведомления в настройках телефона.");
-        }
-        await PushNotifications.register();
-        
-      } else {
         if (!messaging) {
           alert("Push-уведомления не поддерживаются в этом браузере.");
           return;
@@ -307,7 +266,6 @@ export default function App() {
         } else {
           alert("Вы запретили уведомления.");
         }
-      }
     } catch (error) {
       console.error("Ошибка при настройке уведомлений:", error);
       alert(`Ошибка: ${error.message}`);
@@ -399,14 +357,25 @@ export default function App() {
       const messagesRef = collection(db, 'direct_chats', activeDirectChat.id, 'messages');
       const now = new Date().toISOString();
       await addDoc(messagesRef, { text: messageText, userId: user.uid, createdAt: now });
-      await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { updatedAt: now });
+      
+      // ДОБАВЛЯЕМ LAST MESSAGE СЮДА
+      await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { 
+          updatedAt: now,
+          lastMessage: messageText
+      });
       setNewDirectMessage('');
 
       const partnerId = activeDirectChat.partner.id;
       const partnerDoc = await getDoc(doc(db, 'users', partnerId));
       
-      // ИСПОЛЬЗУЕМ АБСОЛЮТНЫЙ ПУТЬ VERCEL_URL
+      // ИСПОЛЬЗУЕМ АБСОЛЮТНЫЙ ПУТЬ VERCEL_URL И ЛОВИМ ОШИБКИ НА ЭКРАН
       if (partnerDoc.exists() && partnerDoc.data().fcmToken) {
+         // Проверка: правильно ли указана ссылка
+         if (VERCEL_URL.includes("ВАША_ССЫЛКА")) {
+            alert("ОШИБКА РАЗРАБОТЧИКА: Вы забыли указать VERCEL_URL в App.jsx");
+            return;
+         }
+
          fetch(`${VERCEL_URL}/api/push`, {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
@@ -415,7 +384,19 @@ export default function App() {
              title: userProfile.name,
              body: messageText.length > 50 ? messageText.substring(0, 47) + '...' : messageText
            })
-         }).catch(err => console.error('Ошибка API Vercel:', err));
+         })
+         .then(async (response) => {
+             const data = await response.json();
+             if (!response.ok) {
+                 alert("ОШИБКА VERCEL: " + (data.error || JSON.stringify(data)));
+             } else {
+                 // Успех! Для теста выведем это на секунду
+                 console.log("Пуш успешно отправлен сервером!", data);
+             }
+         })
+         .catch(err => alert('СБОЙ СЕТИ (fetch): ' + err.message));
+      } else {
+         alert("У собеседника нет fcmToken в базе. Он не нажал на колокольчик!");
       }
     } catch (error) { alert("Ошибка отправки: " + error.message); }
   };
@@ -771,7 +752,9 @@ export default function App() {
                       </div>
                       <div className="flex-1 min-w-0">
                         <h4 className="font-extrabold text-gray-900 truncate text-lg">{partner?.name || 'Пользователь'}</h4>
-                        <p className="text-sm text-purple-500 font-medium truncate mt-0.5">Перейти к переписке...</p>
+                        <p className="text-sm text-gray-500 font-medium truncate mt-0.5">
+                          {chat.lastMessage || 'Перейти к переписке...'}
+                        </p>
                       </div>
                       <ChevronLeft className="w-5 h-5 text-gray-300 rotate-180 shrink-0" />
                     </div>
