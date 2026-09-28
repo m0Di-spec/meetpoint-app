@@ -1,19 +1,16 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle, Bell, BellRing, MailWarning, RefreshCw } from 'lucide-react';
+import { MapPin, Calendar, Clock, Users, Plus, X, Search, Filter, Loader2, MessageSquare, Send, Trash2, CalendarOff, Camera, LogIn, UserPlus, LogOut, UserCircle, Eye, EyeOff, ChevronLeft, Compass, Ticket, Crown, User, MessageCircle, Bell, BellRing, MailWarning, RefreshCw, AlertCircle } from 'lucide-react';
 
-// ИМПОРТЫ FIREBASE
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut, sendPasswordResetEmail, sendEmailVerification } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, setDoc, getDoc, query, where } from 'firebase/firestore';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
-// ИМПОРТЫ CAPACITOR ДЛЯ ANDROID
 import { Capacitor } from '@capacitor/core';
 import { PushNotifications } from '@capacitor/push-notifications';
 
 // ==========================================
 // 🚨 1. ВСТАВЬТЕ СВОИ КЛЮЧИ FIREBASE СЮДА
-// ==========================================
 const firebaseConfig = {
   apiKey: "AIzaSyAM1bfODGs8qCRfYxy906cuct0955Juda8",
   authDomain: "meet-point-73afa.firebaseapp.com",
@@ -26,8 +23,7 @@ const firebaseConfig = {
 // 🚨 2. ВСТАВЬТЕ СКОПИРОВАННЫЙ VAPID KEY СЮДА
 const VAPID_KEY = "BC-H7FIJGhfkBohlUR8nQPOE4okMpjc0qc84JCWNA4uZjhyOXWUsG0ClNg3v5KRgEefZYFzg3nFCKtSYcXMpWug";
 
-// 🚨 3. ВСТАВЬТЕ ССЫЛКУ НА ВАШ VERCEL САЙТ (БЕЗ СЛЕША НА КОНЦЕ)
-// Пример: "https://meetpoint-team-app.vercel.app"
+// 🚨 3. ВСТАВЬТЕ ССЫЛКУ НА ВАШ VERCEL САЙТ (БЕЗ СЛЕША НА КОНЦЕ!)
 const VERCEL_URL = "https://meetpoint-team-app.vercel.app";
 // ==========================================
 
@@ -35,13 +31,8 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Инициализируем систему веб-уведомлений
 let messaging;
-try {
-  messaging = getMessaging(app);
-} catch (e) {
-  console.log("Push-уведомления (Web) не поддерживаются.", e);
-}
+try { messaging = getMessaging(app); } catch (e) { console.log("Push-уведомления (Web) не поддерживаются.", e); }
 
 const CATEGORIES = ['Все', 'Настольные игры', 'Кино', 'Спорт', 'Еда и напитки', 'Искусство', 'Музыка', 'Образование', 'Другое'];
 
@@ -50,6 +41,9 @@ export default function App() {
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [emailVerified, setEmailVerified] = useState(false);
   
+  // Custom Toast State (Замена alert)
+  const [toast, setToast] = useState(null);
+
   const [authMode, setAuthMode] = useState('login'); 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -57,11 +51,10 @@ export default function App() {
   const [authMessage, setAuthMessage] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isResendingEmail, setIsResendingEmail] = useState(false);
-
+  
   const [userProfile, setUserProfile] = useState({ name: '', city: '', interests: '', avatar: '', fcmToken: '' });
   const [isFirstLogin, setIsFirstLogin] = useState(false);
   const [isProfileSaving, setIsProfileSaving] = useState(false);
-
   const [events, setEvents] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [navTab, setNavTab] = useState('all'); 
@@ -72,66 +65,92 @@ export default function App() {
   const [filterCity, setFilterCity] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const [showPastEvents, setShowPastEvents] = useState(false); 
-
+  
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [activeTab, setActiveTab] = useState('info'); 
   const messagesEndRef = useRef(null);
   const directMessagesEndRef = useRef(null);
-
+  
   const [newEvent, setNewEvent] = useState({ title: '', description: '', city: '', date: '', time: '', location: '', category: 'Другое', maxAttendees: '' });
   const [imagePreview, setImagePreview] = useState('');
   const [isUploading, setIsUploading] = useState(false);
-
+  
   const [viewingUser, setViewingUser] = useState(null);
   const [isViewingUserLoading, setIsViewingUserLoading] = useState(false);
-
+  
   const [userChats, setUserChats] = useState([]);
   const [activeDirectChat, setActiveDirectChat] = useState(null);
   const [directMessages, setDirectMessages] = useState([]);
   const [newDirectMessage, setNewDirectMessage] = useState('');
 
+  // Функция для показа уведомлений (замена alert)
+  const showToast = (message) => {
+    setToast(message);
+    setTimeout(() => setToast(null), 6000);
+  };
+
   // === СЛУШАТЕЛЬ ВЕБ-УВЕДОМЛЕНИЙ ===
   useEffect(() => {
     if (messaging) {
       const unsubscribe = onMessage(messaging, (payload) => {
-        alert(`Уведомление: ${payload.notification?.title}\n${payload.notification?.body}`);
+        showToast(`Уведомление: ${payload.notification?.title} - ${payload.notification?.body}`);
       });
       return () => unsubscribe();
     }
   }, []);
 
-  // === СЛУШАТЕЛЬ ANDROID-УВЕДОМЛЕНИЙ ===
+  // === СЛУШАТЕЛЬ ANDROID-УВЕДОМЛЕНИЙ И СОЗДАНИЕ КАНАЛА ===
   useEffect(() => {
     if (Capacitor.isNativePlatform()) {
+      
+      // ПРИНУДИТЕЛЬНО СОЗДАЕМ КАНАЛ СРАЗУ ПРИ ЗАПУСКЕ ПРИЛОЖЕНИЯ
+      const forceCreateChannel = async () => {
+        try {
+          await PushNotifications.createChannel({
+            id: 'high_importance_channel',
+            name: 'Личные сообщения',
+            description: 'Важные уведомления со звуком',
+            importance: 5, // MAX PRIORITY (БУДИТ ЭКРАН)
+            visibility: 1, // PUBLIC (НА ЭКРАНЕ БЛОКИРОВКИ)
+            lights: true,
+            vibration: true
+          });
+          // Успешное создание пройдет тихо, чтобы не отвлекать при каждом входе
+        } catch (error) {
+          showToast("Не удалось создать канал в Android: " + JSON.stringify(error));
+        }
+      };
+      
+      forceCreateChannel();
+
       PushNotifications.addListener('registration', async (token) => {
         if (user) {
           const fcmToken = token.value;
           await updateDoc(doc(db, 'users', user.uid), { fcmToken: fcmToken });
           setUserProfile(prev => ({ ...prev, fcmToken: fcmToken }));
-          alert("Отлично! Android-уведомления включены.");
         }
       });
       PushNotifications.addListener('registrationError', (error) => {
-        alert(`Ошибка Android токена: ${JSON.stringify(error)}`);
+        showToast(`Ошибка Android токена: ${JSON.stringify(error)}`);
       });
       PushNotifications.addListener('pushNotificationReceived', (notification) => {
-        // Уведомление при открытом приложении
-        alert(`Уведомление: ${notification.title}\n${notification.body}`);
+        showToast(`Уведомление: ${notification.title} - ${notification.body}`);
       });
+      
       return () => { PushNotifications.removeAllListeners(); };
     }
   }, [user]);
 
+  // === БЛОКИРОВКА ПРОКРУТКИ ФОНА ===
   useEffect(() => {
-    if (isFirstLogin || isCreateModalOpen || selectedEvent || viewingUser || activeDirectChat || (user && !emailVerified)) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = 'unset';
+    if (isFirstLogin || isCreateModalOpen || selectedEvent || viewingUser || activeDirectChat || (user && !emailVerified)) { 
+      document.body.style.overflow = 'hidden'; 
+    } else { 
+      document.body.style.overflow = 'unset'; 
     }
     return () => { document.body.style.overflow = 'unset'; };
   }, [isFirstLogin, isCreateModalOpen, selectedEvent, viewingUser, activeDirectChat, user, emailVerified]);
@@ -169,9 +188,7 @@ export default function App() {
             setUserProfile(docSnap.data());
             if (docSnap.data().city) setNewEvent(prev => ({...prev, city: docSnap.data().city}));
             setIsFirstLogin(false);
-          } else {
-            setIsFirstLogin(true);
-          }
+          } else { setIsFirstLogin(true); }
         }
       } else {
         setUserProfile({ name: '', city: '', interests: '', avatar: '', fcmToken: '' });
@@ -186,9 +203,8 @@ export default function App() {
     e.preventDefault();
     setAuthError(''); setAuthMessage('');
     try {
-      if (authMode === 'login') {
-        await signInWithEmailAndPassword(auth, email, password);
-      } else {
+      if (authMode === 'login') { await signInWithEmailAndPassword(auth, email, password); } 
+      else {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         await sendEmailVerification(userCredential.user);
       }
@@ -222,12 +238,8 @@ export default function App() {
         if (docSnap.exists()) {
           setUserProfile(docSnap.data());
           setIsFirstLogin(false);
-        } else {
-          setIsFirstLogin(true);
-        }
-      } else {
-        alert("Почта еще не подтверждена. Проверьте папку Спам.");
-      }
+        } else { setIsFirstLogin(true); }
+      } else { showToast("Почта еще не подтверждена. Проверьте папку Спам."); }
     }
   };
 
@@ -236,10 +248,10 @@ export default function App() {
       setIsResendingEmail(true);
       try {
         await sendEmailVerification(user);
-        alert("Письмо успешно отправлено повторно!");
+        showToast("Письмо успешно отправлено повторно!");
       } catch (error) {
-        if (error.code === 'auth/too-many-requests') alert("Слишком много попыток. Подождите немного.");
-        else alert(`Ошибка отправки: ${error.message}`);
+        if (error.code === 'auth/too-many-requests') showToast("Слишком много попыток. Подождите немного.");
+        else showToast(`Ошибка отправки: ${error.message}`);
       }
       setIsResendingEmail(false);
     }
@@ -254,82 +266,36 @@ export default function App() {
     try {
       await setDoc(doc(db, "users", user.uid), userProfile);
       setIsFirstLogin(false);
-    } catch (error) { alert(`Ошибка сохранения: ${error.message}`); } 
+    } catch (error) { showToast(`Ошибка сохранения: ${error.message}`); } 
     finally { setIsProfileSaving(false); }
   };
 
-  // === УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ (С ВАЖНЫМ КАНАЛОМ ANDROID) ===
+  // === УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ ===
   const requestNotificationPermission = async () => {
-    if (!user) {
-      alert("Авторизуйтесь, чтобы получать уведомления.");
-      return;
-    }
-    
+    if (!user) { showToast("Авторизуйтесь, чтобы получать уведомления."); return; }
     try {
         if (Capacitor.isNativePlatform()) {
-          // --- ЛОГИКА ДЛЯ ANDROID (APK) ---
           let permStatus = await PushNotifications.checkPermissions();
-          if (permStatus.receive === 'prompt') {
-            permStatus = await PushNotifications.requestPermissions();
-          }
-          if (permStatus.receive !== 'granted') {
-            alert("Вы запретили уведомления в настройках телефона.");
-            return;
-          }
-
-          // ВАЖНО: Создаем канал высокой важности (чтобы экран мог загораться)
-          try {
-            await PushNotifications.createChannel({
-              id: 'high_importance_channel',
-              name: 'Личные сообщения',
-              description: 'Уведомления о новых сообщениях в чатах',
-              importance: 5, // 5 = MAX (Максимальная важность)
-              visibility: 1, // 1 = PUBLIC (Показывать на заблокированном экране)
-              lights: true,
-              vibration: true
-            });
-          } catch (e) {
-            console.log("Канал уже существует или не поддерживается", e);
-          }
-
+          if (permStatus.receive === 'prompt') { permStatus = await PushNotifications.requestPermissions(); }
+          if (permStatus.receive !== 'granted') { showToast("Вы запретили уведомления в настройках телефона."); return; }
           await PushNotifications.register();
-          
+          showToast("Отлично! Android-уведомления включены.");
         } else {
-          // --- ЛОГИКА ДЛЯ ВЕБ (БРАУЗЕР / PWA) ---
-          if (!messaging) {
-            alert("Push-уведомления не поддерживаются в этом браузере.");
-            return;
-          }
-          if (!('Notification' in window)) {
-            alert("Ваш браузер не поддерживает API уведомлений.");
-            return;
-          }
-          
+          if (!messaging) { showToast("Push-уведомления не поддерживаются в этом браузере."); return; }
+          if (!('Notification' in window)) { showToast("Ваш браузер не поддерживает API уведомлений."); return; }
           const permission = await Notification.requestPermission();
           if (permission === 'granted') {
             const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
-            await navigator.serviceWorker.ready; // Ждем готовности SW
-            
-            const token = await getToken(messaging, { 
-              vapidKey: VAPID_KEY,
-              serviceWorkerRegistration: registration 
-            });
-            
+            await navigator.serviceWorker.ready; 
+            const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: registration });
             if (token) {
               await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
               setUserProfile(prev => ({ ...prev, fcmToken: token }));
-              alert("Отлично! Вы будете получать веб-уведомления.");
-            } else {
-              alert("Не удалось получить токен.");
-            }
-          } else {
-            alert("Вы запретили уведомления.");
-          }
+              showToast("Отлично! Вы будете получать веб-уведомления.");
+            } else { showToast("Не удалось получить токен."); }
+          } else { showToast("Вы запретили уведомления."); }
         }
-    } catch (error) {
-      console.error("Ошибка при настройке уведомлений:", error);
-      alert(`Ошибка настройки: ${error.message}`);
-    }
+    } catch (error) { showToast(`Ошибка настройки: ${error.message}`); }
   };
 
   const handleAvatarChange = async (e) => {
@@ -341,20 +307,13 @@ export default function App() {
 
   const handleUserClick = async (clickedUserId) => {
     if (!clickedUserId) return;
-    if (clickedUserId === user?.uid) {
-      setSelectedEvent(null);
-      setNavTab('profile');
-      return;
-    }
+    if (clickedUserId === user?.uid) { setSelectedEvent(null); setNavTab('profile'); return; }
     setIsViewingUserLoading(true);
     try {
       const docRef = doc(db, 'users', clickedUserId);
       const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        setViewingUser({ ...docSnap.data(), id: clickedUserId });
-      } else {
-        alert("Пользователь не найден");
-      }
+      if (docSnap.exists()) { setViewingUser({ ...docSnap.data(), id: clickedUserId }); } 
+      else { showToast("Пользователь не найден"); }
     } catch (error) { console.error(error); } 
     finally { setIsViewingUserLoading(false); }
   };
@@ -389,9 +348,7 @@ export default function App() {
         const newChatRef = await addDoc(collection(db, 'direct_chats'), chatData);
         setViewingUser(null);
         setActiveDirectChat({ id: newChatRef.id, partner });
-      } catch (error) {
-        alert(`Ошибка создания чата: ${error.message}`);
-      }
+      } catch (error) { showToast(`Ошибка создания чата: ${error.message}`); }
     }
   };
 
@@ -409,7 +366,6 @@ export default function App() {
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { directMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [directMessages]);
 
-  // === ОТПРАВКА ЛИЧНОГО СООБЩЕНИЯ (С ЛОВУШКОЙ ОШИБОК СЕРВЕРА) ===
   const handleSendDirectMessage = async (e) => {
     e.preventDefault();
     if (!newDirectMessage.trim() || !user || !activeDirectChat) return;
@@ -418,21 +374,16 @@ export default function App() {
       const messagesRef = collection(db, 'direct_chats', activeDirectChat.id, 'messages');
       const now = new Date().toISOString();
       await addDoc(messagesRef, { text: messageText, userId: user.uid, createdAt: now });
-      
-      await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { 
-          updatedAt: now,
-          lastMessage: messageText
-      });
+      await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { updatedAt: now, lastMessage: messageText });
       setNewDirectMessage('');
 
       const partnerId = activeDirectChat.partner.id;
       const partnerDoc = await getDoc(doc(db, 'users', partnerId));
       
+      // ИСПОЛЬЗУЕМ АБСОЛЮТНЫЙ ПУТЬ VERCEL_URL С ТОЧНЫМИ УВЕДОМЛЕНИЯМИ
       if (partnerDoc.exists() && partnerDoc.data().fcmToken) {
-         // Защита от лишних слешей в ссылке
          const baseUrl = VERCEL_URL.replace(/\/+$/, "");
          const pushUrl = `${baseUrl}/api/push`;
-
          fetch(pushUrl, {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
@@ -443,21 +394,18 @@ export default function App() {
            })
          })
          .then(async (response) => {
-             // Проверяем, вернул ли сервер JSON или какую-то HTML-ошибку
              const isJson = response.headers.get("content-type")?.includes("application/json");
              if (isJson) {
                  const data = await response.json();
-                 if (!response.ok) {
-                     alert(`Ошибка сервера: ${data.error || JSON.stringify(data)}`);
-                 }
+                 if (!response.ok) { showToast(`Ошибка сервера: ${data.error || JSON.stringify(data)}`); }
              } else {
                  const text = await response.text();
-                 alert(`Vercel не нашел файл (404) или вернул HTML!\nСтучались по адресу: ${pushUrl}\nСтатус: ${response.status}\nОтвет: ${text.substring(0, 50)}...`);
+                 showToast(`Сбой: Vercel вернул не JSON. URL: ${pushUrl} | Ответ: ${text.substring(0, 40)}...`);
              }
          })
-         .catch(err => alert(`Сбой сети: ${err.message}\nПроверьте CORS или интернет.`));
+         .catch(err => showToast(`Сбой сети: ${err.message}`));
       }
-    } catch (error) { alert(`Ошибка отправки: ${error.message}`); }
+    } catch (error) { showToast(`Ошибка отправки: ${error.message}`); }
   };
 
   useEffect(() => {
@@ -471,7 +419,6 @@ export default function App() {
     return () => unsubscribe();
   }, [user, selectedEvent]);
 
-  // === ОТПРАВКА СООБЩЕНИЯ В ЧАТ СОБЫТИЯ ===
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !user || !selectedEvent) return;
@@ -486,10 +433,8 @@ export default function App() {
           if (attendee.id !== user.uid) { 
             const attendeeDoc = await getDoc(doc(db, 'users', attendee.id));
             if (attendeeDoc.exists() && attendeeDoc.data().fcmToken) {
-               
                const baseUrl = VERCEL_URL.replace(/\/+$/, "");
                const pushUrl = `${baseUrl}/api/push`;
-
                fetch(pushUrl, {
                  method: 'POST',
                  headers: { 'Content-Type': 'application/json' },
@@ -498,12 +443,12 @@ export default function App() {
                    title: `Чат: ${selectedEvent.title}`,
                    body: `${userProfile.name}: ${messageText.length > 30 ? messageText.substring(0, 27) + '...' : messageText}`
                  })
-               }).catch(err => console.error('Ошибка вызова push api:', err));
+               }).catch(err => console.error('Push api error:', err));
             }
           }
         });
       }
-    } catch (error) { alert(`Ошибка отправки: ${error.message}`); }
+    } catch (error) { showToast(`Ошибка отправки: ${error.message}`); }
   };
 
   useEffect(() => {
@@ -529,7 +474,6 @@ export default function App() {
     return events.filter(event => {
       const isPast = isEventPast(event.date, event.time);
       if (isPast && !showPastEvents) return false;
-
       if (navTab === 'going') {
         const isParticipant = event.attendeesList?.some(a => a.id === user?.uid);
         const isOrganizer = event.organizerId === user?.uid;
@@ -539,7 +483,6 @@ export default function App() {
         const isOrganizer = event.organizerId === user?.uid;
         if (!isOrganizer) return false;
       }
-      
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
         if (!(event.title?.toLowerCase().includes(query) || event.description?.toLowerCase().includes(query))) return false;
@@ -547,7 +490,6 @@ export default function App() {
       if (selectedCategory !== 'Все' && event.category !== selectedCategory) return false;
       if (filterCity && !(event.city?.toLowerCase().includes(filterCity.toLowerCase()) || event.location?.toLowerCase().includes(filterCity.toLowerCase()))) return false;
       if (filterDate && event.date !== filterDate) return false;
-      
       return true;
     });
   }, [events, navTab, searchQuery, selectedCategory, filterCity, filterDate, user, showPastEvents]);
@@ -579,7 +521,7 @@ export default function App() {
       setIsCreateModalOpen(false);
       setNewEvent({ title: '', description: '', city: userProfile.city || '', date: '', time: '', location: '', category: 'Другое', maxAttendees: '' });
       setImagePreview('');
-    } catch (error) { alert(`Ошибка при сохранении: ${error.message}`); } 
+    } catch (error) { showToast(`Ошибка при сохранении: ${error.message}`); } 
     finally { setIsUploading(false); }
   };
 
@@ -593,7 +535,7 @@ export default function App() {
         setSelectedEvent(prev => ({ ...prev, attendees: prev.attendees + 1, attendeesList: [...(prev.attendeesList || []), { id: user.uid, name: userProfile.name, avatar: userProfile.avatar }] }));
         setActiveTab('chat');
       }
-    } catch (error) { alert(`Ошибка присоединения: ${error.message}`); }
+    } catch (error) { showToast(`Ошибка присоединения: ${error.message}`); }
   };
 
   const isParticipant = useMemo(() => {
@@ -611,7 +553,7 @@ export default function App() {
       if (selectedEvent?.docId === event.docId) {
         setSelectedEvent(prev => ({ ...prev, attendees: Math.max(0, prev.attendees - 1), attendeesList: prev.attendeesList.filter(a => a.id !== user.uid) }));
       }
-    } catch (error) { alert(`Ошибка выхода: ${error.message}`); }
+    } catch (error) { showToast(`Ошибка выхода: ${error.message}`); }
   };
 
   const handleDeleteEvent = async (event) => {
@@ -621,7 +563,7 @@ export default function App() {
       await deleteDoc(eventRef); 
       setSelectedEvent(null);
       setShowDeleteConfirm(false);
-    } catch (error) { alert(`Ошибка удаления: ${error.message}`); }
+    } catch (error) { showToast(`Ошибка удаления: ${error.message}`); }
   };
 
   if (isAuthLoading) {
@@ -632,6 +574,12 @@ export default function App() {
   if (!user) {
     return (
       <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex flex-col items-center justify-center p-4">
+        {toast && (
+          <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[200] bg-gray-900 text-white px-5 py-3 rounded-full shadow-2xl animate-in slide-in-from-top flex items-center gap-2 max-w-[90vw] break-words">
+            <AlertCircle className="w-5 h-5 text-orange-400 shrink-0" /><span className="text-sm font-medium">{toast}</span>
+            <button onClick={() => setToast(null)} className="ml-2 text-gray-400 hover:text-white shrink-0"><X className="w-4 h-4"/></button>
+          </div>
+        )}
         <div className="w-full max-w-md bg-white/70 backdrop-blur-xl rounded-[32px] shadow-2xl overflow-hidden border border-white/50">
           <div className="bg-gradient-to-r from-orange-400 to-purple-500 p-10 text-center" style={{ paddingTop: 'max(env(safe-area-inset-top), 2.5rem)' }}>
             <h1 className="text-4xl font-extrabold text-white mb-2 tracking-tight">MeetPoint</h1>
@@ -662,6 +610,12 @@ export default function App() {
   if (user && !emailVerified) {
     return (
       <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex flex-col items-center justify-center p-4">
+        {toast && (
+          <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[200] bg-gray-900 text-white px-5 py-3 rounded-full shadow-2xl animate-in slide-in-from-top flex items-center gap-2 max-w-[90vw] break-words">
+            <AlertCircle className="w-5 h-5 text-orange-400 shrink-0" /><span className="text-sm font-medium">{toast}</span>
+            <button onClick={() => setToast(null)} className="ml-2 text-gray-400 hover:text-white shrink-0"><X className="w-4 h-4"/></button>
+          </div>
+        )}
         <div className="w-full max-w-md bg-white/80 backdrop-blur-xl rounded-[32px] shadow-2xl p-8 border border-white/50 text-center relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-orange-400 to-purple-500"></div>
           <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6"><MailWarning className="w-10 h-10 text-orange-500" /></div>
@@ -679,9 +633,17 @@ export default function App() {
 
   // 3. ОСНОВНОЕ ПРИЛОЖЕНИЕ
   return (
-    <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 text-slate-800 font-sans pb-24">
+    <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 text-slate-800 font-sans pb-24 relative">
       
-      {/* ГЛАВНАЯ ШАПКА */}
+      {/* ГЛОБАЛЬНЫЙ TOAST ДЛЯ ОШИБОК И УВЕДОМЛЕНИЙ */}
+      {toast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[300] bg-gray-900 text-white px-5 py-3 rounded-full shadow-2xl animate-in slide-in-from-top-4 flex items-center gap-2 max-w-[90vw] mt-[env(safe-area-inset-top)]">
+          <BellRing className="w-5 h-5 text-orange-400 shrink-0" />
+          <span className="text-sm font-medium leading-tight truncate">{toast}</span>
+          <button onClick={() => setToast(null)} className="ml-2 text-gray-400 hover:text-white shrink-0 bg-gray-800 rounded-full p-1"><X className="w-4 h-4"/></button>
+        </div>
+      )}
+
       {navTab !== 'profile' && navTab !== 'chats' && (
         <header className="bg-white/40 backdrop-blur-xl border-b border-white/50 sticky top-0 z-30 pt-[env(safe-area-inset-top)] transition-all">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between pb-2 mt-2">
@@ -699,10 +661,7 @@ export default function App() {
         </header>
       )}
 
-      {/* ОСНОВНОЙ КОНТЕНТ */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pt-[max(env(safe-area-inset-top),1.5rem)]">
-        
-        {/* ВКЛАДКИ: ВСЕ, Я ИДУ, МОИ */}
         {(navTab === 'all' || navTab === 'going' || navTab === 'organized') && (
           <>
             <div className="mb-6">
@@ -736,9 +695,7 @@ export default function App() {
               </div>
             </div>
 
-            <h2 className="text-2xl font-extrabold text-gray-900 mb-5 pl-1">
-              {navTab === 'all' ? 'Все события' : navTab === 'going' ? 'Вы идёте' : 'Ваши события'}
-            </h2>
+            <h2 className="text-2xl font-extrabold text-gray-900 mb-5 pl-1">{navTab === 'all' ? 'Все события' : navTab === 'going' ? 'Вы идёте' : 'Ваши события'}</h2>
             
             {isLoading ? (
               <div className="flex flex-col items-center justify-center py-20"><Loader2 className="w-10 h-10 animate-spin text-purple-400" /></div>
@@ -750,12 +707,7 @@ export default function App() {
                   <div key={event.docId} onClick={() => setSelectedEvent(event)} className={`bg-white/80 backdrop-blur-sm rounded-[32px] p-2 shadow-sm hover:shadow-xl transition-all cursor-pointer group flex flex-col h-full border border-white ${isPast ? 'opacity-60 grayscale-[40%]' : ''}`}>
                     <div className="relative h-48 bg-gray-100 rounded-[28px] overflow-hidden">
                       <img src={event.image} alt={event.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-out" />
-                      
-                      <div className="absolute top-3 left-3 flex gap-2">
-                        <span className="bg-white/90 backdrop-blur-md px-3.5 py-1.5 rounded-full text-xs font-bold text-purple-700 shadow-sm">{event.category}</span>
-                        {isPast && <span className="bg-gray-800/90 backdrop-blur-md text-white px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm">Прошло</span>}
-                      </div>
-
+                      <div className="absolute top-3 left-3 flex gap-2"><span className="bg-white/90 backdrop-blur-md px-3.5 py-1.5 rounded-full text-xs font-bold text-purple-700 shadow-sm">{event.category}</span>{isPast && <span className="bg-gray-800/90 backdrop-blur-md text-white px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm">Прошло</span>}</div>
                       {event.organizerId === user?.uid && <div className="absolute top-3 right-3 bg-gradient-to-r from-orange-400 to-purple-500 text-white px-3.5 py-1.5 rounded-full text-xs font-bold shadow-sm">Моё</div>}
                     </div>
                     <div className="p-4 flex flex-col flex-grow relative">
@@ -766,25 +718,19 @@ export default function App() {
                       </div>
                       <div className="pt-4 border-t border-gray-100 flex items-center justify-between mt-auto">
                         <div className="flex items-center text-sm font-bold text-gray-500"><Users className="w-4 h-4 mr-1.5 text-gray-400" /> {event.attendees}{event.maxAttendees && `/${event.maxAttendees}`}</div>
-                        {!isPast && (
-                          <button onClick={(e) => { e.stopPropagation(); if (event.organizerId === user?.uid) return; event.attendeesList?.some(a => a.id === user?.uid) ? handleLeaveEvent(event) : handleJoinEvent(event); }} className={`px-5 py-2.5 rounded-full text-sm font-bold z-10 transition-colors ${event.organizerId === user?.uid ? 'bg-gray-100 text-gray-600' : event.attendeesList?.some(a => a.id === user?.uid) ? 'bg-red-50 text-red-500 hover:bg-red-100' : 'bg-purple-50 text-purple-600 hover:bg-purple-100'}`}>{event.organizerId === user?.uid ? 'Орг' : event.attendeesList?.some(a => a.id === user?.uid) ? 'Не пойду' : 'Пойду'}</button>
-                        )}
+                        {!isPast && (<button onClick={(e) => { e.stopPropagation(); if (event.organizerId === user?.uid) return; event.attendeesList?.some(a => a.id === user?.uid) ? handleLeaveEvent(event) : handleJoinEvent(event); }} className={`px-5 py-2.5 rounded-full text-sm font-bold z-10 transition-colors ${event.organizerId === user?.uid ? 'bg-gray-100 text-gray-600' : event.attendeesList?.some(a => a.id === user?.uid) ? 'bg-red-50 text-red-500 hover:bg-red-100' : 'bg-purple-50 text-purple-600 hover:bg-purple-100'}`}>{event.organizerId === user?.uid ? 'Орг' : event.attendeesList?.some(a => a.id === user?.uid) ? 'Не пойду' : 'Пойду'}</button>)}
                       </div>
                     </div>
                   </div>
                 )})}
               </div>
             ) : (
-              <div className="text-center py-24 bg-white/50 backdrop-blur-xl rounded-[32px] border border-white shadow-sm">
-                <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-5 shadow-sm"><Search className="w-8 h-8 text-gray-300"/></div>
-                <h3 className="text-xl font-extrabold text-gray-900">Событий не найдено</h3>
-                <p className="text-gray-500 mb-4 mt-2 max-w-sm mx-auto font-medium">Попробуйте изменить параметры поиска или создайте свое мероприятие!</p>
-              </div>
+              <div className="text-center py-24 bg-white/50 backdrop-blur-xl rounded-[32px] border border-white shadow-sm"><div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-5 shadow-sm"><Search className="w-8 h-8 text-gray-300"/></div><h3 className="text-xl font-extrabold text-gray-900">Событий не найдено</h3><p className="text-gray-500 mb-4 mt-2 max-w-sm mx-auto font-medium">Попробуйте изменить параметры поиска или создайте свое мероприятие!</p></div>
             )}
           </>
         )}
 
-        {/* ВКЛАДКА: ЧАТЫ */}
+        {}
         {navTab === 'chats' && (
           <div className="w-full max-w-md mx-auto">
             <h2 className="text-3xl font-extrabold text-gray-900 mb-6 pl-1 tracking-tight">Сообщения</h2>
@@ -795,55 +741,34 @@ export default function App() {
                   const partner = chat.users[partnerId];
                   return (
                     <div key={chat.id} onClick={() => setActiveDirectChat({ id: chat.id, partner: { id: partnerId, ...partner } })} className="bg-white/80 backdrop-blur-md rounded-[28px] p-4 flex items-center gap-4 cursor-pointer hover:bg-white transition-all shadow-sm border border-white">
-                      <div className="relative w-14 h-14 rounded-full overflow-hidden shrink-0 border-2 border-white shadow-sm">
-                        {partner?.avatar ? <img src={partner.avatar} className="w-full h-full object-cover" alt="av" /> : <UserCircle className="w-full h-full text-gray-300 bg-gray-50" />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-extrabold text-gray-900 truncate text-lg">{partner?.name || 'Пользователь'}</h4>
-                        <p className="text-sm text-gray-500 font-medium truncate mt-0.5">
-                          {chat.lastMessage || 'Перейти к переписке...'}
-                        </p>
-                      </div>
+                      <div className="relative w-14 h-14 rounded-full overflow-hidden shrink-0 border-2 border-white shadow-sm">{partner?.avatar ? <img src={partner.avatar} className="w-full h-full object-cover" alt="av" /> : <UserCircle className="w-full h-full text-gray-300 bg-gray-50" />}</div>
+                      <div className="flex-1 min-w-0"><h4 className="font-extrabold text-gray-900 truncate text-lg">{partner?.name || 'Пользователь'}</h4><p className="text-sm text-gray-500 font-medium truncate mt-0.5">{chat.lastMessage || 'Перейти к переписке...'}</p></div>
                       <ChevronLeft className="w-5 h-5 text-gray-300 rotate-180 shrink-0" />
                     </div>
                   );
                 })}
               </div>
             ) : (
-              <div className="text-center py-20 bg-white/50 backdrop-blur-xl rounded-[32px] border border-white shadow-sm mt-4">
-                <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-5 shadow-sm"><MessageCircle className="w-8 h-8 text-gray-300"/></div>
-                <h3 className="text-xl font-extrabold text-gray-900">У вас пока нет диалогов</h3>
-                <p className="text-gray-500 mt-2 max-w-xs mx-auto font-medium text-sm">Заходите в профили других людей и нажимайте "Написать сообщение", чтобы начать общение.</p>
-              </div>
+              <div className="text-center py-20 bg-white/50 backdrop-blur-xl rounded-[32px] border border-white shadow-sm mt-4"><div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-5 shadow-sm"><MessageCircle className="w-8 h-8 text-gray-300"/></div><h3 className="text-xl font-extrabold text-gray-900">У вас пока нет диалогов</h3><p className="text-gray-500 mt-2 max-w-xs mx-auto font-medium text-sm">Заходите в профили других людей и нажимайте "Написать сообщение", чтобы начать общение.</p></div>
             )}
           </div>
         )}
 
-        {/* ВКЛАДКА: ПРОФИЛЬ */}
         {navTab === 'profile' && (
           <div className="w-full max-w-md mx-auto bg-white/80 backdrop-blur-xl rounded-[32px] overflow-hidden shadow-sm border border-white">
-            <div className="px-6 py-5 border-b border-white/50 shrink-0">
-              <h3 className="text-2xl font-extrabold text-gray-900 tracking-tight">Настройки профиля</h3>
-            </div>
+            <div className="px-6 py-5 border-b border-white/50 shrink-0"><h3 className="text-2xl font-extrabold text-gray-900 tracking-tight">Настройки профиля</h3></div>
             <form id="profileForm" onSubmit={handleSaveProfile} className="p-6 space-y-5">
-              <div className="flex flex-col items-center mb-4">
-                <div className="relative w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
-                <span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50/50 backdrop-blur-sm border border-purple-100 px-4 py-1.5 rounded-full">Сменить фото</span>
-              </div>
+              <div className="flex flex-col items-center mb-4"><div className="relative w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} alt="Avatar" className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div><span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50/50 backdrop-blur-sm border border-purple-100 px-4 py-1.5 rounded-full">Сменить фото</span></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Имя и Фамилия *</label><input required type="text" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner transition-all" placeholder="Как вас зовут?" /></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Ваш город</label><input type="text" value={userProfile.city} onChange={e => setUserProfile({...userProfile, city: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner transition-all" placeholder="Москва" /></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">О себе и интересы</label><textarea value={userProfile.interests} onChange={e => setUserProfile({...userProfile, interests: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 resize-none shadow-inner transition-all" rows="3" placeholder="Расскажите немного о себе..."></textarea></div>
             </form>
-            <div className="p-5 border-t border-white/50 bg-white/50 shrink-0 flex flex-col gap-3">
-              <button type="submit" form="profileForm" disabled={isProfileSaving} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:opacity-90 transition-all shadow-md disabled:opacity-50">{isProfileSaving ? 'Сохранение...' : 'Сохранить изменения'}</button>
-              <button onClick={handleLogout} className="w-full text-red-500 font-bold py-4 rounded-3xl hover:bg-red-50 flex items-center justify-center gap-2 transition-colors border border-red-50"><LogOut className="w-5 h-5" /> Выйти из аккаунта</button>
-            </div>
+            <div className="p-5 border-t border-white/50 bg-white/50 shrink-0 flex flex-col gap-3"><button type="submit" form="profileForm" disabled={isProfileSaving} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:opacity-90 transition-all shadow-md disabled:opacity-50">{isProfileSaving ? 'Сохранение...' : 'Сохранить изменения'}</button><button onClick={handleLogout} className="w-full text-red-500 font-bold py-4 rounded-3xl hover:bg-red-50 flex items-center justify-center gap-2 transition-colors border border-red-50"><LogOut className="w-5 h-5" /> Выйти из аккаунта</button></div>
           </div>
         )}
-
       </main>
 
-      {/* НИЖНЯЯ ПАНЕЛЬ НАВИГАЦИИ */}
+      {}
       {(!selectedEvent && !activeDirectChat && !isFirstLogin && !isCreateModalOpen && !viewingUser) && (
         <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-2xl border-t border-white/50 z-40 pb-[max(env(safe-area-inset-bottom),0.5rem)] shadow-[0_-20px_40px_rgba(0,0,0,0.03)]">
           <div className="flex justify-around items-center h-[72px] max-w-md mx-auto px-2">
@@ -856,26 +781,17 @@ export default function App() {
         </nav>
       )}
 
-      {/* ОСТАЛЬНЫЕ МОДАЛКИ */}
       {isFirstLogin && (
         <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] animate-in fade-in duration-300">
           <div className="bg-white rounded-[32px] w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
-            <div className="px-6 py-5 border-b border-gray-100 shrink-0 text-center">
-              <h3 className="text-2xl font-extrabold text-gray-900">Добро пожаловать!</h3>
-              <p className="text-sm text-gray-500 font-medium mt-1">Расскажите о себе, чтобы начать.</p>
-            </div>
+            <div className="px-6 py-5 border-b border-gray-100 shrink-0 text-center"><h3 className="text-2xl font-extrabold text-gray-900">Добро пожаловать!</h3><p className="text-sm text-gray-500 font-medium mt-1">Расскажите о себе, чтобы начать.</p></div>
             <form id="firstProfileForm" onSubmit={handleSaveProfile} className="p-6 overflow-y-auto space-y-5">
-              <div className="flex flex-col items-center mb-2">
-                <div className="relative w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div>
-                <span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50 px-4 py-1.5 rounded-full">Добавить фото</span>
-              </div>
+              <div className="flex flex-col items-center mb-2"><div className="relative w-32 h-32 bg-gray-50 rounded-full flex items-center justify-center overflow-hidden group cursor-pointer border-4 border-white shadow-md">{userProfile.avatar ? <img src={userProfile.avatar} className="w-full h-full object-cover" /> : <Camera className="w-10 h-10 text-gray-300" />}<input type="file" accept="image/*" onChange={handleAvatarChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div><span className="text-xs text-purple-600 mt-3 font-bold bg-purple-50 px-4 py-1.5 rounded-full">Добавить фото</span></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Имя и Фамилия *</label><input required type="text" value={userProfile.name} onChange={e => setUserProfile({...userProfile, name: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner" placeholder="Как вас зовут?" /></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Ваш город</label><input type="text" value={userProfile.city} onChange={e => setUserProfile({...userProfile, city: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 shadow-inner" placeholder="Москва" /></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">О себе и интересы</label><textarea value={userProfile.interests} onChange={e => setUserProfile({...userProfile, interests: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl focus:ring-2 focus:ring-purple-400 outline-none font-medium text-gray-800 resize-none shadow-inner" rows="3" placeholder="Расскажите немного о себе..."></textarea></div>
             </form>
-            <div className="p-5 border-t border-gray-50 bg-gray-50/50 shrink-0">
-              <button type="submit" form="firstProfileForm" disabled={isProfileSaving} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:shadow-lg transition-all disabled:opacity-50 text-lg shadow-md">{isProfileSaving ? 'Сохранение...' : 'Поехали!'}</button>
-            </div>
+            <div className="p-5 border-t border-gray-50 bg-gray-50/50 shrink-0"><button type="submit" form="firstProfileForm" disabled={isProfileSaving} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:shadow-lg transition-all disabled:opacity-50 text-lg shadow-md">{isProfileSaving ? 'Сохранение...' : 'Поехали!'}</button></div>
           </div>
         </div>
       )}
@@ -883,10 +799,7 @@ export default function App() {
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-md flex items-end sm:items-center justify-center pt-[env(safe-area-inset-top)] animate-in fade-in duration-300">
           <div className="bg-white rounded-t-[32px] sm:rounded-[32px] w-full max-w-lg overflow-hidden flex flex-col h-[90vh] sm:h-auto sm:max-h-[90vh] shadow-2xl animate-in slide-in-from-bottom-5">
-            <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center shrink-0">
-              <h3 className="text-2xl font-extrabold text-gray-900">Новое событие</h3>
-              <button onClick={() => setIsCreateModalOpen(false)} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors"><X className="w-6 h-6 text-gray-600" /></button>
-            </div>
+            <div className="px-6 py-5 border-b border-gray-100 flex justify-between items-center shrink-0"><h3 className="text-2xl font-extrabold text-gray-900">Новое событие</h3><button onClick={() => setIsCreateModalOpen(false)} className="p-2 bg-gray-50 hover:bg-gray-100 rounded-full transition-colors"><X className="w-6 h-6 text-gray-600" /></button></div>
             <form id="createEventForm" onSubmit={handleCreateEvent} className="p-6 overflow-y-auto space-y-5 flex-1">
               <div><label className="block text-sm font-bold text-gray-700 mb-2 ml-1">Обложка</label><div className="relative w-full h-48 bg-gray-50 rounded-[28px] flex flex-col items-center justify-center overflow-hidden border-2 border-dashed border-gray-200 hover:bg-gray-100 transition-colors">{imagePreview ? <img src={imagePreview} alt="Preview" className="w-full h-full object-cover" /> : <div className="text-center text-gray-400"><Camera className="w-10 h-10 mx-auto mb-2 text-purple-300" /><span className="text-sm font-bold">Добавить фото</span></div>}<input type="file" accept="image/*" onChange={handleEventImageChange} className="absolute inset-0 opacity-0 cursor-pointer w-full h-full" /></div></div>
               <div><label className="block text-sm font-bold text-gray-700 mb-1.5 ml-1">Название *</label><input required type="text" value={newEvent.title} onChange={e => setNewEvent({...newEvent, title: e.target.value})} className="w-full px-5 py-4 bg-white border border-gray-100 rounded-3xl outline-none focus:ring-2 focus:ring-purple-400 font-medium shadow-inner" placeholder="Как назовем встречу?" /></div>
@@ -906,10 +819,7 @@ export default function App() {
             <img src={selectedEvent.image} className="w-full h-full object-cover" alt="Обложка" />
             <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/30 to-black/10"></div>
             <button onClick={() => { setSelectedEvent(null); setActiveTab('info'); }} className="absolute top-4 left-4 bg-white/20 backdrop-blur-md text-white p-3 rounded-full hover:bg-white/40 transition-colors z-10 mt-[env(safe-area-inset-top)] border border-white/30"><ChevronLeft className="w-6 h-6" /></button>
-            <div className="absolute bottom-0 inset-x-0 p-6 pt-20">
-              <div className="flex gap-2 mb-3"><span className="px-4 py-1.5 bg-white/20 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm border border-white/30">{selectedEvent.category}</span>{isEventPast(selectedEvent.date, selectedEvent.time) && <span className="px-4 py-1.5 bg-gray-800/80 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm">Прошло</span>}</div>
-              <h2 className="text-3xl font-extrabold text-white leading-tight drop-shadow-md">{selectedEvent.title}</h2>
-            </div>
+            <div className="absolute bottom-0 inset-x-0 p-6 pt-20"><div className="flex gap-2 mb-3"><span className="px-4 py-1.5 bg-white/20 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm border border-white/30">{selectedEvent.category}</span>{isEventPast(selectedEvent.date, selectedEvent.time) && <span className="px-4 py-1.5 bg-gray-800/80 backdrop-blur-md text-white text-xs font-bold rounded-full inline-block shadow-sm">Прошло</span>}</div><h2 className="text-3xl font-extrabold text-white leading-tight drop-shadow-md">{selectedEvent.title}</h2></div>
           </div>
           <div className="flex px-6 shrink-0 bg-white border-b border-gray-100 shadow-sm relative z-10 rounded-t-[32px] -mt-8">
             <button onClick={() => setActiveTab('info')} className={`py-6 mr-8 font-extrabold border-b-[3px] transition-colors ${activeTab === 'info' ? 'border-purple-500 text-purple-700' : 'border-transparent text-gray-400 hover:text-gray-600'}`}>О событии</button>
@@ -926,11 +836,7 @@ export default function App() {
                 <div className="mb-10 bg-white p-6 rounded-[32px] shadow-sm border border-gray-100"><h4 className="text-xl font-extrabold mb-4 text-gray-900">Описание</h4><p className="text-gray-600 whitespace-pre-wrap leading-relaxed text-[15px]">{selectedEvent.description || 'Организатор не оставил описание, но точно будет круто!'}</p></div>
                 <div>
                   <h4 className="text-xl font-extrabold mb-5 text-gray-900 flex items-center gap-3">Участники <span className="bg-purple-100 text-purple-700 px-3 py-1 rounded-full text-sm">{selectedEvent.attendeesList?.length}</span></h4>
-                  <div className="flex flex-wrap gap-3">
-                    {selectedEvent.attendeesList?.map(attendee => (
-                      <div key={attendee.id} onClick={() => handleUserClick(attendee.id)} className="flex items-center gap-3 bg-white pr-5 pl-2 py-2 rounded-full border border-gray-100 shadow-sm cursor-pointer hover:shadow-md transition-shadow">{attendee.avatar ? <img src={attendee.avatar} className="w-10 h-10 rounded-full object-cover" alt="av" /> : <UserCircle className="w-10 h-10 text-gray-300" />}<span className="text-sm font-bold text-gray-800">{attendee.name}</span>{attendee.id === selectedEvent.organizerId && <span className="text-[10px] uppercase font-extrabold bg-gradient-to-r from-orange-400 to-purple-500 text-white px-2 py-1 rounded-full shadow-sm">Орг</span>}</div>
-                    ))}
-                  </div>
+                  <div className="flex flex-wrap gap-3">{selectedEvent.attendeesList?.map(attendee => (<div key={attendee.id} onClick={() => handleUserClick(attendee.id)} className="flex items-center gap-3 bg-white pr-5 pl-2 py-2 rounded-full border border-gray-100 shadow-sm cursor-pointer hover:shadow-md transition-shadow">{attendee.avatar ? <img src={attendee.avatar} className="w-10 h-10 rounded-full object-cover" alt="av" /> : <UserCircle className="w-10 h-10 text-gray-300" />}<span className="text-sm font-bold text-gray-800">{attendee.name}</span>{attendee.id === selectedEvent.organizerId && <span className="text-[10px] uppercase font-extrabold bg-gradient-to-r from-orange-400 to-purple-500 text-white px-2 py-1 rounded-full shadow-sm">Орг</span>}</div>))}</div>
                 </div>
               </div>
             ) : (
@@ -995,9 +901,7 @@ export default function App() {
               {directMessages.length === 0 ? (
                  <div className="flex flex-col items-center justify-center h-full text-center text-gray-400"><MessageCircle className="w-12 h-12 mb-3 text-gray-300" /><p className="font-medium">Это начало вашей переписки.</p><p className="text-sm">Скажите «Привет!»</p></div>
               ) : (
-                directMessages.map(msg => (
-                  <div key={msg.id} className={`flex flex-col ${msg.userId === user?.uid ? 'items-end' : 'items-start'}`}><div className={`px-5 py-3.5 rounded-3xl max-w-[85%] text-[15px] font-medium leading-relaxed shadow-sm ${msg.userId === user?.uid ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'}`}>{msg.text}</div></div>
-                ))
+                directMessages.map(msg => (<div key={msg.id} className={`flex flex-col ${msg.userId === user?.uid ? 'items-end' : 'items-start'}`}><div className={`px-5 py-3.5 rounded-3xl max-w-[85%] text-[15px] font-medium leading-relaxed shadow-sm ${msg.userId === user?.uid ? 'bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-br-sm' : 'bg-white border border-gray-100 text-gray-800 rounded-bl-sm'}`}>{msg.text}</div></div>))
               )}
               <div ref={directMessagesEndRef} />
            </div>
