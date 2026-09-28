@@ -120,6 +120,7 @@ export default function App() {
         alert(`Ошибка Android токена: ${JSON.stringify(error)}`);
       });
       PushNotifications.addListener('pushNotificationReceived', (notification) => {
+        // Уведомление при открытом приложении
         alert(`Уведомление: ${notification.title}\n${notification.body}`);
       });
       return () => { PushNotifications.removeAllListeners(); };
@@ -257,7 +258,7 @@ export default function App() {
     finally { setIsProfileSaving(false); }
   };
 
-  // === УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ ===
+  // === УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ (С ВАЖНЫМ КАНАЛОМ ANDROID) ===
   const requestNotificationPermission = async () => {
     if (!user) {
       alert("Авторизуйтесь, чтобы получать уведомления.");
@@ -275,6 +276,22 @@ export default function App() {
             alert("Вы запретили уведомления в настройках телефона.");
             return;
           }
+
+          // ВАЖНО: Создаем канал высокой важности (чтобы экран мог загораться)
+          try {
+            await PushNotifications.createChannel({
+              id: 'high_importance_channel',
+              name: 'Личные сообщения',
+              description: 'Уведомления о новых сообщениях в чатах',
+              importance: 5, // 5 = MAX (Максимальная важность)
+              visibility: 1, // 1 = PUBLIC (Показывать на заблокированном экране)
+              lights: true,
+              vibration: true
+            });
+          } catch (e) {
+            console.log("Канал уже существует или не поддерживается", e);
+          }
+
           await PushNotifications.register();
           
         } else {

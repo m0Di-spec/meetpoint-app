@@ -44,8 +44,19 @@ export default async function handler(req, res) {
 
   try {
     const payload = {
-      notification: { title, body },
-      token: token
+      notification: { 
+        title, 
+        body 
+      },
+      token: token,
+      // Добавляем настройки специально для Android (Будим телефон)
+      android: {
+        priority: 'high', // Просим максимальный приоритет
+        notification: {
+          channelId: 'high_importance_channel', // Указываем канал, который мы создали в приложении
+          sound: 'default'
+        }
+      }
     };
     
     if (data) payload.data = data;
