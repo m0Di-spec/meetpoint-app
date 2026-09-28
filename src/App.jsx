@@ -28,7 +28,7 @@ const VAPID_KEY = "BC-H7FIJGhfkBohlUR8nQPOE4okMpjc0qc84JCWNA4uZjhyOXWUsG0ClNg3v5
 
 // 🚨 3. ВСТАВЬТЕ ССЫЛКУ НА ВАШ VERCEL САЙТ (БЕЗ СЛЕША НА КОНЦЕ)
 // Пример: "https://meetpoint-team-app.vercel.app"
-const VERCEL_URL = "https://meetpoint-team-app.vercel.app";
+const VERCEL_URL = "[https://meetpoint-team-app.vercel.app/](https://meetpoint-team-app.vercel.app/)";
 // ==========================================
 
 const app = initializeApp(firebaseConfig);
