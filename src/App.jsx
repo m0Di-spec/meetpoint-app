@@ -7,7 +7,7 @@ import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, on
 import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, setDoc, getDoc, query, where } from 'firebase/firestore';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
-// ВОЗВРАЩАЕМ НАТИВНЫЙ МОСТИК ДЛЯ ANDROID
+// ИМПОРТЫ CAPACITOR ДЛЯ ANDROID
 import { Capacitor } from '@capacitor/core';
 import { PushNotifications } from '@capacitor/push-notifications';
 
@@ -28,7 +28,7 @@ const VAPID_KEY = "BC-H7FIJGhfkBohlUR8nQPOE4okMpjc0qc84JCWNA4uZjhyOXWUsG0ClNg3v5
 
 // 🚨 3. ВСТАВЬТЕ ССЫЛКУ НА ВАШ VERCEL САЙТ (БЕЗ СЛЕША НА КОНЦЕ)
 // Пример: "https://meetpoint-team-app.vercel.app"
-const VERCEL_URL = "[https://meetpoint-team-app.vercel.app/](https://meetpoint-team-app.vercel.app/)";
+const VERCEL_URL = "https://meetpoint-team-app.vercel.app";
 // ==========================================
 
 const app = initializeApp(firebaseConfig);
@@ -257,7 +257,7 @@ export default function App() {
     finally { setIsProfileSaving(false); }
   };
 
-  // === ИСПРАВЛЕННАЯ УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ ===
+  // === УМНАЯ КНОПКА ЗАПРОСА РАЗРЕШЕНИЙ ===
   const requestNotificationPermission = async () => {
     if (!user) {
       alert("Авторизуйтесь, чтобы получать уведомления.");
@@ -291,9 +291,7 @@ export default function App() {
           const permission = await Notification.requestPermission();
           if (permission === 'granted') {
             const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
-            
-            // 🔥 Ожидаем готовности воркера перед запросом токена 🔥
-            await navigator.serviceWorker.ready;
+            await navigator.serviceWorker.ready; // Ждем готовности SW
             
             const token = await getToken(messaging, { 
               vapidKey: VAPID_KEY,
@@ -313,7 +311,7 @@ export default function App() {
         }
     } catch (error) {
       console.error("Ошибка при настройке уведомлений:", error);
-      alert(`Ошибка: ${error.message}`);
+      alert(`Ошибка настройки: ${error.message}`);
     }
   };
 
@@ -394,6 +392,7 @@ export default function App() {
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
   useEffect(() => { directMessagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [directMessages]);
 
+  // === ОТПРАВКА ЛИЧНОГО СООБЩЕНИЯ (С ЛОВУШКОЙ ОШИБОК СЕРВЕРА) ===
   const handleSendDirectMessage = async (e) => {
     e.preventDefault();
     if (!newDirectMessage.trim() || !user || !activeDirectChat) return;
@@ -413,7 +412,11 @@ export default function App() {
       const partnerDoc = await getDoc(doc(db, 'users', partnerId));
       
       if (partnerDoc.exists() && partnerDoc.data().fcmToken) {
-         fetch(`${VERCEL_URL}/api/push`, {
+         // Защита от лишних слешей в ссылке
+         const baseUrl = VERCEL_URL.replace(/\/+$/, "");
+         const pushUrl = `${baseUrl}/api/push`;
+
+         fetch(pushUrl, {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
            body: JSON.stringify({
@@ -423,12 +426,19 @@ export default function App() {
            })
          })
          .then(async (response) => {
-             const data = await response.json();
-             if (!response.ok) {
-                 alert(`Ошибка VERCEL при отправке пуша: ${data.error || JSON.stringify(data)}`);
+             // Проверяем, вернул ли сервер JSON или какую-то HTML-ошибку
+             const isJson = response.headers.get("content-type")?.includes("application/json");
+             if (isJson) {
+                 const data = await response.json();
+                 if (!response.ok) {
+                     alert(`Ошибка сервера: ${data.error || JSON.stringify(data)}`);
+                 }
+             } else {
+                 const text = await response.text();
+                 alert(`Vercel не нашел файл (404) или вернул HTML!\nСтучались по адресу: ${pushUrl}\nСтатус: ${response.status}\nОтвет: ${text.substring(0, 50)}...`);
              }
          })
-         .catch(err => alert(`СБОЙ СЕТИ: ${err.message}`));
+         .catch(err => alert(`Сбой сети: ${err.message}\nПроверьте CORS или интернет.`));
       }
     } catch (error) { alert(`Ошибка отправки: ${error.message}`); }
   };
@@ -444,6 +454,7 @@ export default function App() {
     return () => unsubscribe();
   }, [user, selectedEvent]);
 
+  // === ОТПРАВКА СООБЩЕНИЯ В ЧАТ СОБЫТИЯ ===
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (!newMessage.trim() || !user || !selectedEvent) return;
@@ -458,7 +469,11 @@ export default function App() {
           if (attendee.id !== user.uid) { 
             const attendeeDoc = await getDoc(doc(db, 'users', attendee.id));
             if (attendeeDoc.exists() && attendeeDoc.data().fcmToken) {
-               fetch(`${VERCEL_URL}/api/push`, {
+               
+               const baseUrl = VERCEL_URL.replace(/\/+$/, "");
+               const pushUrl = `${baseUrl}/api/push`;
+
+               fetch(pushUrl, {
                  method: 'POST',
                  headers: { 'Content-Type': 'application/json' },
                  body: JSON.stringify({
@@ -466,7 +481,7 @@ export default function App() {
                    title: `Чат: ${selectedEvent.title}`,
                    body: `${userProfile.name}: ${messageText.length > 30 ? messageText.substring(0, 27) + '...' : messageText}`
                  })
-               }).catch(err => console.error('Ошибка API Vercel:', err));
+               }).catch(err => console.error('Ошибка вызова push api:', err));
             }
           }
         });
@@ -632,27 +647,13 @@ export default function App() {
       <div className="min-h-[100dvh] bg-gradient-to-br from-orange-50 via-white to-purple-50 flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-md bg-white/80 backdrop-blur-xl rounded-[32px] shadow-2xl p-8 border border-white/50 text-center relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-orange-400 to-purple-500"></div>
-          
-          <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6">
-            <MailWarning className="w-10 h-10 text-orange-500" />
-          </div>
-          
+          <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-6"><MailWarning className="w-10 h-10 text-orange-500" /></div>
           <h2 className="text-2xl font-extrabold text-gray-900 mb-3">Подтвердите почту</h2>
-          <p className="text-gray-500 font-medium mb-8 text-sm leading-relaxed">
-            Мы отправили письмо на <br/><span className="text-gray-900 font-bold">{user.email}</span>.<br/>
-            Перейдите по ссылке внутри, чтобы получить доступ к приложению.
-          </p>
-
+          <p className="text-gray-500 font-medium mb-8 text-sm leading-relaxed">Мы отправили письмо на <br/><span className="text-gray-900 font-bold">{user.email}</span>.<br/>Перейдите по ссылке внутри, чтобы получить доступ.</p>
           <div className="space-y-4">
-            <button onClick={checkEmailVerification} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:shadow-lg transition-all flex justify-center items-center gap-2">
-              <RefreshCw className="w-5 h-5" /> Я подтвердил(а) почту
-            </button>
-            <button onClick={resendVerificationEmail} disabled={isResendingEmail} className="w-full bg-gray-100 text-gray-700 font-bold py-4 rounded-3xl hover:bg-gray-200 transition-all disabled:opacity-50 text-sm">
-              {isResendingEmail ? 'Отправка...' : 'Отправить письмо еще раз'}
-            </button>
-            <button onClick={handleLogout} className="w-full text-red-500 font-bold py-3 text-sm hover:underline">
-              Выйти и сменить аккаунт
-            </button>
+            <button onClick={checkEmailVerification} className="w-full bg-gradient-to-r from-orange-400 to-purple-500 text-white font-bold py-4 rounded-3xl hover:shadow-lg transition-all flex justify-center items-center gap-2"><RefreshCw className="w-5 h-5" /> Я подтвердил(а) почту</button>
+            <button onClick={resendVerificationEmail} disabled={isResendingEmail} className="w-full bg-gray-100 text-gray-700 font-bold py-4 rounded-3xl hover:bg-gray-200 transition-all disabled:opacity-50 text-sm">{isResendingEmail ? 'Отправка...' : 'Отправить письмо еще раз'}</button>
+            <button onClick={handleLogout} className="w-full text-red-500 font-bold py-3 text-sm hover:underline">Выйти и сменить аккаунт</button>
           </div>
         </div>
       </div>
