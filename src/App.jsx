@@ -7,6 +7,10 @@ import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, on
 import { getFirestore, doc, onSnapshot, collection, addDoc, updateDoc, arrayUnion, arrayRemove, deleteDoc, setDoc, getDoc, query, where } from 'firebase/firestore';
 import { getMessaging, getToken, onMessage } from 'firebase/messaging';
 
+// Удалены импорты Capacitor, так как они вызывают ошибку компиляции в веб-окружении
+// import { Capacitor } from '@capacitor/core';
+// import { PushNotifications } from '@capacitor/push-notifications';
+
 // ==========================================
 // 🚨 1. ВСТАВЬТЕ СВОИ КЛЮЧИ FIREBASE СЮДА
 // ==========================================
@@ -23,8 +27,8 @@ const firebaseConfig = {
 const VAPID_KEY = "BC-H7FIJGhfkBohlUR8nQPOE4okMpjc0qc84JCWNA4uZjhyOXWUsG0ClNg3v5KRgEefZYFzg3nFCKtSYcXMpWug";
 
 // 🚨 3. ВСТАВЬТЕ ССЫЛКУ НА ВАШ VERCEL САЙТ (БЕЗ СЛЕША НА КОНЦЕ)
-// Пример: "https://meetpoint-app.vercel.app"
-const VERCEL_URL = "https://meetpoint-team-app.vercel.app/";
+// Пример: "https://meetpoint-team-app.vercel.app"
+const VERCEL_URL = "https://meetpoint-team-app.vercel.app";
 // ==========================================
 
 const app = initializeApp(firebaseConfig);
@@ -34,7 +38,6 @@ const db = getFirestore(app);
 // Инициализируем систему веб-уведомлений
 let messaging;
 try {
-  // Для совместимости в окне предпросмотра мы инициализируем веб-пуши всегда
   messaging = getMessaging(app);
 } catch (e) {
   console.log("Push-уведомления (Web) не поддерживаются.", e);
@@ -97,12 +100,33 @@ export default function App() {
   useEffect(() => {
     if (messaging) {
       const unsubscribe = onMessage(messaging, (payload) => {
-        console.log('Получено Web-уведомление:', payload);
         alert(`Уведомление: ${payload.notification?.title}\n${payload.notification?.body}`);
       });
       return () => unsubscribe();
     }
   }, []);
+
+  // === СЛУШАТЕЛЬ ANDROID-УВЕДОМЛЕНИЙ ===
+  // Этот блок закомментирован, так как библиотека Capacitor недоступна
+  // useEffect(() => {
+  //   if (Capacitor.isNativePlatform()) {
+  //     PushNotifications.addListener('registration', async (token) => {
+  //       if (user) {
+  //         const fcmToken = token.value;
+  //         await updateDoc(doc(db, 'users', user.uid), { fcmToken: fcmToken });
+  //         setUserProfile(prev => ({ ...prev, fcmToken: fcmToken }));
+  //         alert("Отлично! Android-уведомления включены.");
+  //       }
+  //     });
+  //     PushNotifications.addListener('registrationError', (error) => {
+  //       alert('Ошибка Android токена: ' + JSON.stringify(error));
+  //     });
+  //     PushNotifications.addListener('pushNotificationReceived', (notification) => {
+  //       alert(`Уведомление: ${notification.title}\n${notification.body}`);
+  //     });
+  //     return () => { PushNotifications.removeAllListeners(); };
+  //   }
+  // }, [user]);
 
   useEffect(() => {
     if (isFirstLogin || isCreateModalOpen || selectedEvent || viewingUser || activeDirectChat || (user && !emailVerified)) {
@@ -243,29 +267,42 @@ export default function App() {
     }
     
     try {
-        if (!messaging) {
-          alert("Push-уведомления не поддерживаются в этом браузере.");
-          return;
-        }
-        
-        const permission = await Notification.requestPermission();
-        if (permission === 'granted') {
-          const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
-          const token = await getToken(messaging, { 
-            vapidKey: VAPID_KEY,
-            serviceWorkerRegistration: registration 
-          });
-          
-          if (token) {
-            await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
-            setUserProfile(prev => ({ ...prev, fcmToken: token }));
-            alert("Отлично! Вы будете получать веб-уведомления.");
-          } else {
-            alert("Не удалось получить токен.");
+        // Закомментирован нативный код Capacitor
+        // if (Capacitor.isNativePlatform()) {
+        //   let permStatus = await PushNotifications.checkPermissions();
+        //   if (permStatus.receive === 'prompt') {
+        //     permStatus = await PushNotifications.requestPermissions();
+        //   }
+        //   if (permStatus.receive !== 'granted') {
+        //     alert("Вы запретили уведомления в настройках телефона.");
+        //     return;
+        //   }
+        //   await PushNotifications.register();
+        // } else {
+          // --- ВЕБ ВЕРСИЯ (PWA) ---
+          if (!messaging) {
+            alert("Push-уведомления не поддерживаются в этом браузере.");
+            return;
           }
-        } else {
-          alert("Вы запретили уведомления.");
-        }
+          const permission = await Notification.requestPermission();
+          if (permission === 'granted') {
+            const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+            const token = await getToken(messaging, { 
+              vapidKey: VAPID_KEY,
+              serviceWorkerRegistration: registration 
+            });
+            
+            if (token) {
+              await updateDoc(doc(db, 'users', user.uid), { fcmToken: token });
+              setUserProfile(prev => ({ ...prev, fcmToken: token }));
+              alert("Отлично! Вы будете получать веб-уведомления.");
+            } else {
+              alert("Не удалось получить токен.");
+            }
+          } else {
+            alert("Вы запретили уведомления.");
+          }
+        // }
     } catch (error) {
       console.error("Ошибка при настройке уведомлений:", error);
       alert(`Ошибка: ${error.message}`);
@@ -358,7 +395,7 @@ export default function App() {
       const now = new Date().toISOString();
       await addDoc(messagesRef, { text: messageText, userId: user.uid, createdAt: now });
       
-      // ДОБАВЛЯЕМ LAST MESSAGE СЮДА
+      // ДОБАВЛЯЕМ LAST MESSAGE СЮДА ДЛЯ ЛЕНИВОЙ ЗАГРУЗКИ
       await updateDoc(doc(db, 'direct_chats', activeDirectChat.id), { 
           updatedAt: now,
           lastMessage: messageText
@@ -368,14 +405,7 @@ export default function App() {
       const partnerId = activeDirectChat.partner.id;
       const partnerDoc = await getDoc(doc(db, 'users', partnerId));
       
-      // ИСПОЛЬЗУЕМ АБСОЛЮТНЫЙ ПУТЬ VERCEL_URL И ЛОВИМ ОШИБКИ НА ЭКРАН
       if (partnerDoc.exists() && partnerDoc.data().fcmToken) {
-         // Проверка: правильно ли указана ссылка
-         if (VERCEL_URL.includes("ВАША_ССЫЛКА")) {
-            alert("ОШИБКА РАЗРАБОТЧИКА: Вы забыли указать VERCEL_URL в App.jsx");
-            return;
-         }
-
          fetch(`${VERCEL_URL}/api/push`, {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
@@ -388,15 +418,12 @@ export default function App() {
          .then(async (response) => {
              const data = await response.json();
              if (!response.ok) {
-                 alert("ОШИБКА VERCEL: " + (data.error || JSON.stringify(data)));
-             } else {
-                 // Успех! Для теста выведем это на секунду
-                 console.log("Пуш успешно отправлен сервером!", data);
+                 alert("Ошибка VERCEL: " + (data.error || JSON.stringify(data)));
              }
          })
-         .catch(err => alert('СБОЙ СЕТИ (fetch): ' + err.message));
+         .catch(err => alert('СБОЙ СЕТИ: ' + err.message));
       } else {
-         alert("У собеседника нет fcmToken в базе. Он не нажал на колокольчик!");
+         console.log("У собеседника нет токена. Пуш не отправлен.");
       }
     } catch (error) { alert("Ошибка отправки: " + error.message); }
   };
@@ -422,10 +449,9 @@ export default function App() {
       await addDoc(messagesRef, { text: messageText, userId: user.uid, userName: userProfile.name || 'Гость', userAvatar: userProfile.avatar || '', createdAt: new Date().toISOString() });
       setNewMessage('');
 
-      // РАССЫЛКА ПУШЕЙ УЧАСТНИКАМ (кроме самого отправителя)
       if (selectedEvent.attendeesList && selectedEvent.attendeesList.length > 0) {
         selectedEvent.attendeesList.forEach(async (attendee) => {
-          if (attendee.id !== user.uid) { // Не отправляем пуш самому себе
+          if (attendee.id !== user.uid) { 
             const attendeeDoc = await getDoc(doc(db, 'users', attendee.id));
             if (attendeeDoc.exists() && attendeeDoc.data().fcmToken) {
                fetch(`${VERCEL_URL}/api/push`, {
@@ -808,8 +834,7 @@ export default function App() {
         </nav>
       )}
 
-      {/* ОСТАЛЬНЫЕ МОДАЛКИ (Первый вход, создание, профиль пользователя, чаты) ОСТАЛИСЬ БЕЗ ИЗМЕНЕНИЙ */}
-      {/* ... (Первый вход) ... */}
+      {/* ОСТАЛЬНЫЕ МОДАЛКИ (Первый вход, создание) */}
       {isFirstLogin && (
         <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] animate-in fade-in duration-300">
           <div className="bg-white rounded-[32px] w-full max-w-md overflow-hidden flex flex-col max-h-[90vh] shadow-2xl">
@@ -833,7 +858,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ... (Создание события) ... */}
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-md flex items-end sm:items-center justify-center pt-[env(safe-area-inset-top)] animate-in fade-in duration-300">
           <div className="bg-white rounded-t-[32px] sm:rounded-[32px] w-full max-w-lg overflow-hidden flex flex-col h-[90vh] sm:h-auto sm:max-h-[90vh] shadow-2xl animate-in slide-in-from-bottom-5">
@@ -854,7 +878,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ... (Карточка события) ... */}
       {selectedEvent && (
         <div className="fixed inset-0 z-[90] bg-white flex flex-col h-[100dvh] overflow-hidden animate-in slide-in-from-right duration-300">
           <div className="relative h-[40vh] min-h-[300px] shrink-0 bg-gray-200">
@@ -914,7 +937,6 @@ export default function App() {
         </div>
       )}
 
-      {/* ... (Чужой профиль) ... */}
       {viewingUser && (
          <div className="fixed inset-0 z-[110] bg-gray-900/60 backdrop-blur-md flex items-center justify-center p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] animate-in fade-in duration-200">
            <div className="bg-white rounded-[32px] w-full max-w-sm overflow-hidden flex flex-col shadow-2xl relative animate-in zoom-in-95">
@@ -937,7 +959,6 @@ export default function App() {
          </div>
       )}
 
-      {/* ... (Личный чат) ... */}
       {activeDirectChat && (
         <div className="fixed inset-0 z-[120] bg-white flex flex-col h-[100dvh] overflow-hidden animate-in slide-in-from-right duration-300">
            <div className="flex items-center gap-3 px-4 h-16 shrink-0 bg-white border-b border-gray-100 shadow-sm pt-[env(safe-area-inset-top)] pb-2 relative z-10 box-content">
@@ -965,7 +986,6 @@ export default function App() {
            </form>
         </div>
       )}
-
     </div>
   );
 }
