@@ -18,21 +18,10 @@ if (!getApps().length) {
   }
 }
 
+// Очистка от HTML-тегов
 const stripHtml = (html) => {
   if (!html) return '';
   return html.replace(/<[^>]*>?/gm, '').trim();
-};
-
-const mapCategory = (kudagoCategories) => {
-  if (!kudagoCategories || kudagoCategories.length === 0) return 'Другое';
-  const cats = kudagoCategories.join(',');
-  if (cats.includes('cinema')) return 'Кино';
-  if (cats.includes('concert') || cats.includes('music')) return 'Музыка';
-  if (cats.includes('education')) return 'Образование';
-  if (cats.includes('theater') || cats.includes('exhibition') || cats.includes('art')) return 'Искусство';
-  if (cats.includes('party') || cats.includes('food')) return 'Еда и напитки';
-  if (cats.includes('sport')) return 'Спорт';
-  return 'Другое';
 };
 
 export default async function handler(req, res) {
@@ -47,61 +36,87 @@ export default async function handler(req, res) {
 
   try {
     const db = getFirestore();
-    const now = Math.floor(Date.now() / 1000);
+    const today = new Date().toISOString().split('T')[0];
     
-    const url = `https://kudago.com/public-api/v1.4/events/?location=rnd&actual_since=${now}&fields=id,title,description,dates,images,place,categories&expand=place&page_size=10`;
+    // Ищем события сразу в двух городах
+    const targetCities = 'Ростов-на-Дону,Таганрог';
+    const citiesQuery = encodeURIComponent(targetCities);
     
-    // ДОБАВЛЯЕМ ЗАГОЛОВКИ, ЧТОБЫ ПРИТВОРИТЬСЯ БРАУЗЕРОМ
+    // Увеличили лимит до 20, чтобы захватить больше событий
+    const url = `https://api.timepad.ru/v1/events?cities=${citiesQuery}&limit=20&sort=+starts_at&starts_at_min=${today}&access_statuses=public`;
+    
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Accept': 'application/json'
       }
     });
 
-    // ВЫВОДИМ ПОДРОБНУЮ ОШИБКУ, ЕСЛИ ОНА ЕСТЬ
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`KudaGo ответил ошибкой: ${response.status} - ${errorText.substring(0, 100)}`);
+        throw new Error(`Timepad ответил ошибкой: ${response.status} - ${errorText.substring(0, 100)}`);
     }
 
     const data = await response.json();
     
-    if (!data.results || data.results.length === 0) {
+    if (!data.values || data.values.length === 0) {
         return res.status(200).json({ success: true, message: 'Нет новых событий для парсинга' });
     }
 
     let addedCount = 0;
 
-    for (const item of data.results) {
+    for (const item of data.values) {
+       // Проверка на дубликаты
        const existingSnap = await db.collection('events').where('externalId', '==', item.id.toString()).get();
        if (!existingSnap.empty) continue; 
 
-       const firstDate = item.dates[0];
-       if (!firstDate || !firstDate.start) continue;
+       if (!item.starts_at) continue;
 
-       const startDate = new Date(firstDate.start * 1000);
-       
-       const dateString = startDate.toISOString().split('T')[0];
-       const timeString = startDate.toTimeString().substring(0, 5); 
+       const [datePart, timePartRaw] = item.starts_at.split('T');
+       const dateString = datePart;
+       const timeString = timePartRaw.substring(0, 5); 
 
-       const imageUrl = item.images && item.images.length > 0 ? item.images[0].image : 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&q=80&w=600';
+       const imageUrl = item.poster_image && item.poster_image.default_url 
+            ? item.poster_image.default_url 
+            : 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&q=80&w=600';
 
-       let locationName = 'Ростов-на-Дону';
-       if (item.place && item.place.title) locationName = item.place.title;
-       else if (item.place && item.place.address) locationName = item.place.address;
+       // Определяем точный город из ответа Timepad
+       let eventCity = 'Ростов-на-Дону'; // По умолчанию
+       if (item.location && item.location.city) {
+           eventCity = item.location.city;
+       }
+
+       // Получаем адрес
+       let locationName = eventCity;
+       if (item.location && item.location.address) {
+           locationName = item.location.address;
+       }
+
+       // Определяем категорию
+       let category = 'Другое';
+       if (item.categories && item.categories.length > 0) {
+            const catName = item.categories[0].name.toLowerCase();
+            if (catName.includes('кино')) category = 'Кино';
+            else if (catName.includes('музык') || catName.includes('концерт')) category = 'Музыка';
+            else if (catName.includes('образован') || catName.includes('лекци') || catName.includes('бизнес')) category = 'Образование';
+            else if (catName.includes('театр') || catName.includes('выставк') || catName.includes('искусств')) category = 'Искусство';
+            else if (catName.includes('еда') || catName.includes('вечерин')) category = 'Еда и напитки';
+            else if (catName.includes('спорт') || catName.includes('игр')) category = 'Спорт';
+       }
+
+       const organizerName = item.organization ? item.organization.name : 'Афиша Timepad';
 
        const newEvent = {
-         title: item.title.charAt(0).toUpperCase() + item.title.slice(1), 
-         description: stripHtml(item.description),
-         city: 'Ростов-на-Дону',
+         title: item.name.charAt(0).toUpperCase() + item.name.slice(1), 
+         description: stripHtml(item.description_html || item.description_short),
+         city: eventCity, // Записываем правильный город
          location: locationName,
          date: dateString,
          time: timeString,
-         category: mapCategory(item.categories),
+         category: category,
          image: imageUrl,
-         organizer: 'Афиша KudaGo', 
-         organizerId: 'kudago-bot', 
+         organizer: organizerName, 
+         organizerId: 'timepad-bot', 
          attendees: 0,
          attendeesList: [],
          externalId: item.id.toString(), 
@@ -119,8 +134,7 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error('Ошибка парсера:', error);
-    // ТЕПЕРЬ ОШИБКА БУДЕТ ПОДРОБНОЙ
+    console.error('Ошибка парсера Timepad:', error);
     return res.status(500).json({ error: error.message });
   }
 }
