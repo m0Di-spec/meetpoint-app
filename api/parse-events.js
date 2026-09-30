@@ -1,7 +1,7 @@
 import { initializeApp, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 
-// Инициализация Firebase Admin (переиспользуем ключи от пуш-уведомлений)
+// Инициализация Firebase Admin
 let initError = null;
 if (!getApps().length) {
   try {
@@ -18,13 +18,11 @@ if (!getApps().length) {
   }
 }
 
-// Функция для очистки HTML-тегов (KudaGo присылает описание с тегами <p>, <br>)
 const stripHtml = (html) => {
   if (!html) return '';
   return html.replace(/<[^>]*>?/gm, '').trim();
 };
 
-// Функция для определения нашей категории на основе категорий KudaGo
 const mapCategory = (kudagoCategories) => {
   if (!kudagoCategories || kudagoCategories.length === 0) return 'Другое';
   const cats = kudagoCategories.join(',');
@@ -38,7 +36,6 @@ const mapCategory = (kudagoCategories) => {
 };
 
 export default async function handler(req, res) {
-  // 1. ЗАЩИТА: Проверяем секретный пароль, чтобы кто попало не мог запустить парсер
   const { secret } = req.query;
   const MY_SECRET = process.env.PARSER_SECRET || 'meetpoint2024'; 
   
@@ -50,14 +47,24 @@ export default async function handler(req, res) {
 
   try {
     const db = getFirestore();
-    // Получаем текущее время в секундах (требование KudaGo)
     const now = Math.floor(Date.now() / 1000);
     
-    // 2. ЗАПРОС К KUDAGO: location=rnd (Ростов), актуальные события, с картинками и местом
     const url = `https://kudago.com/public-api/v1.4/events/?location=rnd&actual_since=${now}&fields=id,title,description,dates,images,place,categories&expand=place&page_size=10`;
     
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Сбой при обращении к KudaGo');
+    // ДОБАВЛЯЕМ ЗАГОЛОВКИ, ЧТОБЫ ПРИТВОРИТЬСЯ БРАУЗЕРОМ
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'application/json'
+      }
+    });
+
+    // ВЫВОДИМ ПОДРОБНУЮ ОШИБКУ, ЕСЛИ ОНА ЕСТЬ
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`KudaGo ответил ошибкой: ${response.status} - ${errorText.substring(0, 100)}`);
+    }
+
     const data = await response.json();
     
     if (!data.results || data.results.length === 0) {
@@ -66,34 +73,26 @@ export default async function handler(req, res) {
 
     let addedCount = 0;
 
-    // 3. ОБРАБОТКА И СОХРАНЕНИЕ В MEETPOINT
     for (const item of data.results) {
-       // Защита от дубликатов: проверяем, нет ли уже события с таким externalId
        const existingSnap = await db.collection('events').where('externalId', '==', item.id.toString()).get();
-       if (!existingSnap.empty) continue; // Пропускаем, если уже есть в базе
+       if (!existingSnap.empty) continue; 
 
-       // Берем первую дату проведения
        const firstDate = item.dates[0];
        if (!firstDate || !firstDate.start) continue;
 
-       // Конвертируем дату из формата Unix (секунды) в объекты JS
        const startDate = new Date(firstDate.start * 1000);
        
-       // Форматируем для MeetPoint: YYYY-MM-DD и HH:MM
        const dateString = startDate.toISOString().split('T')[0];
-       const timeString = startDate.toTimeString().substring(0, 5); // берем "HH:MM"
+       const timeString = startDate.toTimeString().substring(0, 5); 
 
-       // Берем картинку (если есть)
        const imageUrl = item.images && item.images.length > 0 ? item.images[0].image : 'https://images.unsplash.com/photo-1528605248644-14dd04022da1?auto=format&fit=crop&q=80&w=600';
 
-       // Название места
        let locationName = 'Ростов-на-Дону';
        if (item.place && item.place.title) locationName = item.place.title;
        else if (item.place && item.place.address) locationName = item.place.address;
 
-       // Собираем объект в формате MeetPoint
        const newEvent = {
-         title: item.title.charAt(0).toUpperCase() + item.title.slice(1), // Делаем первую букву заглавной
+         title: item.title.charAt(0).toUpperCase() + item.title.slice(1), 
          description: stripHtml(item.description),
          city: 'Ростов-на-Дону',
          location: locationName,
@@ -101,15 +100,14 @@ export default async function handler(req, res) {
          time: timeString,
          category: mapCategory(item.categories),
          image: imageUrl,
-         organizer: 'Афиша KudaGo', // Помечаем, что это из парсера
+         organizer: 'Афиша KudaGo', 
          organizerId: 'kudago-bot', 
          attendees: 0,
          attendeesList: [],
-         externalId: item.id.toString(), // Уникальный ID из KudaGo для защиты от дублей
+         externalId: item.id.toString(), 
          createdAt: new Date().toISOString()
        };
 
-       // Сохраняем в Firebase
        await db.collection('events').add(newEvent);
        addedCount++;
     }
@@ -122,6 +120,7 @@ export default async function handler(req, res) {
 
   } catch (error) {
     console.error('Ошибка парсера:', error);
+    // ТЕПЕРЬ ОШИБКА БУДЕТ ПОДРОБНОЙ
     return res.status(500).json({ error: error.message });
   }
 }
